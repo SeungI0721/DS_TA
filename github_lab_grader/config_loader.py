@@ -33,6 +33,7 @@ _REPOSITORY_PATTERN = re.compile(
 )
 _GITHUB_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 RUNTIME_CONFIG_FILENAME = "config.json"
+PRIVATE_STUDENTS_FILENAME = "students.csv"
 
 
 def ensure_runtime_config_is_private(path: Path) -> None:
@@ -56,6 +57,25 @@ def ensure_runtime_config_is_private(path: Path) -> None:
         raise ConfigurationSecurityError(
             "private course configuration must not be tracked by Git"
         )
+
+
+def ensure_private_local_file_is_untracked(path: Path) -> None:
+    """실제 roster처럼 이름으로 식별되는 private 입력의 Git 추적을 차단한다."""
+
+    if path.name not in {RUNTIME_CONFIG_FILENAME, PRIVATE_STUDENTS_FILENAME}:
+        return
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path.parent), "ls-files", "--error-unmatch", "--", path.name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ConfigurationSecurityError("cannot verify that private local input is untracked") from exc
+    if result.returncode == 0:
+        raise ConfigurationSecurityError(f"private {path.name} must not be tracked by Git")
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -132,8 +152,11 @@ def load_global_config(path: Path, *, enforce_private_runtime: bool = True) -> C
         raise ConfigurationError(f"invalid global configuration: {exc}") from exc
 
 
-def load_students(path: Path) -> list[Student]:
+def load_students(path: Path, *, enforce_private_runtime: bool = True) -> list[Student]:
     """추적되지 않는 CSV에서 학생별 repository 설정을 검증해 읽는다."""
+
+    if enforce_private_runtime:
+        ensure_private_local_file_is_untracked(path)
 
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:

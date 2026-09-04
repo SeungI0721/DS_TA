@@ -102,6 +102,18 @@ def test_student_csv_rejects_malformed_repository(tmp_path: Path) -> None:
         load_students(path)
 
 
+def test_tracked_private_student_csv_is_security_violation(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "students.csv"
+    path.write_text("section,student_id,name,github_id,repository\n", encoding="utf-8")
+    monkeypatch.setattr(
+        loader.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "students.csv", ""),
+    )
+    with pytest.raises(ConfigurationSecurityError, match="students.csv must not be tracked"):
+        load_students(path)
+
+
 @pytest.mark.parametrize("missing_key", ["professor_github", "assistant_github"])
 def test_global_config_requires_both_course_accounts(tmp_path: Path, missing_key: str) -> None:
     data = example_config()

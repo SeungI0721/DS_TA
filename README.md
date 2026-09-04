@@ -2,7 +2,7 @@
 
 Data Structures 실습 과목의 GitHub 제출 증거를 수집하고 주차별 채점 결과를 보존하기 위한 Windows용 Python CLI 프로젝트이다.
 
-현재 저장소는 **Phase 4 학생별 채점 orchestration**까지 구현되어 있다. 읽기 전용 GitHub evidence를 제출 선택, collaborator 확인, SHA 고정 README identity 검사와 순수 점수 결정에 연결해 메모리의 `GradeResult`를 생성한다. 불변 JSON 기록·Excel 생성·C 실행은 아직 구현하지 않았다.
+현재 저장소는 **Phase 5 canonical immutable grading record**까지 구현되어 있다. Phase 4 `GradeResult`를 section/week별 로컬 JSON에 원자적으로 저장하고, 명시적 regrade에서 이전 revision을 먼저 archive하며, 이후 GitHub 재조회 없이 검증·재구성할 수 있다. Excel 생성과 C 실행은 아직 구현하지 않았다.
 
 ## 프로젝트 목적
 
@@ -36,11 +36,11 @@ C 소스 검사와 학생 프로그램 실행은 Version 1 범위가 아니다.
 | 학생별·section/week 채점 orchestration | 구현, mock integration test 검증 |
 | 제출 선택·README identity·순수 점수 결정 | 구현, unit test 검증 |
 | 기술적 불확실성의 null/manual-review 보존 | 구현, unit test 검증 |
-| 불변 JSON 기록과 regrade archive | 미구현 |
+| 불변 JSON 기록과 regrade archive | 구현, local unit/integration test 검증 |
 | Excel 보고서와 누적 성적표 | 미구현 |
 | 실제 학생 저장소 검증 | 미수행 |
 
-현재 `grade`, `rebuild-gradebook`, `final-report`, `validate-config` 명령은 인자 구조만 정의한다. Phase 4 orchestration은 Python API로 제공되며 실제 학생 CSV를 사용하는 CLI 실행과 record write는 Phase 5 범위로 남아 있다.
+`grade`는 private config·roster·출력 경로를 먼저 검증한 뒤 Phase 4 orchestration과 Phase 5 저장을 연결한다. `rebuild-gradebook`과 `final-report`는 Phase 6 범위로 남아 있다.
 
 ## 전체 프로젝트 구조
 
@@ -69,6 +69,7 @@ DS-TA/
 │  ├─ readme_checker.py
 │  ├─ grader.py
 │  ├─ orchestrator.py
+│  ├─ grading_workflow.py
 │  ├─ record_store.py
 │  ├─ excel_report.py
 │  ├─ gradebook.py
@@ -86,6 +87,7 @@ DS-TA/
    ├─ test_readme_checker.py
    ├─ test_grader.py
    ├─ test_orchestrator.py
+   ├─ test_record_store.py
    └─ test_record_and_gradebook_scaffold.py
 ```
 
@@ -290,25 +292,35 @@ selected_submission_push.head_sha
 
 ## 결과 파일 및 성적 관리
 
-이 기능은 아직 구현되지 않았다. Phase 5 이후 다음 구조를 사용할 예정이다.
+canonical JSON과 archive는 구현되어 있으며 출력 구조는 다음과 같다.
 
 ```text
 records/section01/week01.json
-archive/section01/week01/<timestamp>_revision1.json
+archive/section01/week01/revision_001_<timestamp>_<run-id>.json
 output/section01/week01_results.xlsx
 output/section01/master_gradebook.xlsx
 output/final_all_sections.xlsx
 ```
 
-JSON 기록이 canonical evidence이며 Excel은 JSON에서 다시 생성하는 보고서다. 기존 기록은 기본적으로 덮어쓰지 않고, 명시적 `--regrade`에서만 이전 기록을 충돌 없는 archive 경로에 보존한 뒤 atomic write로 새 기록을 설치한다.
+JSON 기록이 canonical evidence이며 Excel은 Phase 6에서 JSON만 읽어 생성할 보고서다. 첫 저장은 revision 1이며 기존 기록은 기본적으로 `RECORD_ALREADY_EXISTS`로 거부한다. 명시적 `--regrade`에서만 검증된 이전 byte를 충돌 없는 archive 경로에 먼저 보존하고, 확인 후 atomic `os.replace`로 새 revision을 설치한다. archive나 replacement 실패 시 기존 canonical 파일을 변경하지 않는다.
+
+record에는 과정·분반·주차·run UUID·revision·timezone-aware 시각, timing/grading policy, 학생별 정규화된 제출·collaborator·README·coverage 증거와 파생 summary가 들어간다. token, 전체 GitHub Events 응답, README 본문은 저장하지 않는다. `0.0`과 `null`은 서로 다른 값으로 보존하며 aggregate에서도 `null`을 0점으로 간주하지 않는다.
+
+```powershell
+python main.py grade --week 1 --section 01
+python main.py grade --week 1 --section 01 --regrade --regrade-reason "재검토 사유"
+python main.py grade --week 1 --section 01 --dry-run
+```
+
+`--dry-run`은 GitHub 채점을 수행해 간결한 summary만 표시하고 `records/`나 `archive/`에 쓰지 않는다. `RecordStore.list_records()`와 `load()`는 schema와 상태 일관성을 검증하여 Phase 6가 GitHub를 다시 호출하지 않고 최신 canonical records를 재구성하게 한다.
 
 누적 성적표에서 아직 채점하지 않은 주차는 blank로 두고 실제 0.0점과 구분한다. 최종 실습 환산 점수는 포함된 주차의 실제 최대 점수 합계를 사용하며 별도 함수에서 계산할 예정이다.
 
 ## 테스트 및 검증
 
-2026-09-04 Phase 4 점검 기준:
+2026-09-04 Phase 5 점검 기준:
 
-- offline pytest 결과: 123 passed, 3 skipped, 0 failed
+- offline pytest 결과: 152 passed, 2 skipped, 0 failed
 - 개발자 소유 공개 repository 대상 read-only live pytest 결과: 1 passed, 125 deselected, 0 failed
 - pytest 기반 Phase 2/3 regression과 Phase 4 pure/orchestration test 실행
 - 인증, HTTP status, timeout, retry, pagination, PushEvent, collaborator, README-at-SHA를 fake HTTP response로 검증
@@ -317,7 +329,8 @@ JSON 기록이 canonical evidence이며 Excel은 JSON에서 다시 생성하는 
 - live test에서 GitHub CLI 인증, repository metadata·permissions, Events API, rate-limit header, root contents, README UTF-8 decoding, 명시적 commit SHA 조회, 현재 owner collaborator 상태 검증
 - 선택한 live repository에는 최근 PushEvent가 없어 live PushEvent normalization은 수행하지 않았으며 offline test로만 검증
 - Python syntax/import validation 실행
-- Phase 5 이후의 불변 기록과 성적표 요구사항은 test scaffold로 보존
+- Phase 5 persistence와 regrade 실패 경계를 isolated temporary directory에서 검증
+- Phase 6 성적표 요구사항은 test scaffold로 보존
 - 실제 학생 저장소 검증은 수행하지 않음
 
 skip된 테스트를 통과한 기능으로 해석해서는 안 된다.
@@ -362,7 +375,7 @@ $env:GITHUB_LIVE_REPOSITORY='owner/repository'
 - 현재 공식 문서 기준 최대 약 300개 이벤트와 최근 약 30일 범위만 제공된다.
 - repository event 반영은 약 30초에서 최대 6시간 지연될 수 있다.
 - 일반 채점은 최소 `effective_deadline + github_event_settle_delay_hours` 이후 수행하며 accepted push가 없을 때에는 late window evidence도 settle될 때까지 기다린다.
-- `--force-early-grading`은 불완전한 이벤트 증거를 만들 수 있으므로 경고와 manual-review 상태가 필요하다.
+- `--force-early-grading`은 불완전한 증거를 canonical record로 고정할 수 있어 현재 CLI가 GitHub 요청 전에 명시적으로 거부한다.
 - 이벤트가 300개 한도에서 잘렸거나 필요한 기간을 덮지 못하면 `NOT_SUBMITTED`로 단정하지 않는다.
 - collaborator API는 채점 시점의 접근 상태만 확인하며 초대·수락 시점을 역사적으로 증명하지 않는다.
 - 권한 또는 인증 문제를 collaborator `MISSING`으로 해석하지 않는다.
@@ -377,7 +390,7 @@ $env:GITHUB_LIVE_REPOSITORY='owner/repository'
 
 ## 향후 확장
 
-Phase 5는 `GradeResult`를 canonical immutable JSON으로 기록하고 regrade revision/archive, atomic write, provenance 보존과 master-record reconstruction을 구현한다. Excel 출력은 그 canonical record를 읽는 이후 보고 단계로 유지한다.
+Phase 6는 검증된 canonical records만으로 section/week Excel, master gradebook과 최종 환산 점수 보고서를 재구성한다. 보고 단계에서는 GitHub를 다시 호출하지 않는다.
 
 `c_checker.py`는 현재 항상 `NotImplementedError`를 발생시키는 안전한 placeholder이며 학생 코드를 실행하지 않는다.
 
