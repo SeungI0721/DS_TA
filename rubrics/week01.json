@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "week": 1,
+  "title": "GitHub Basic Submission",
+  "max_score": 1.0,
+  "submission_branch": "default",
+  "require_student_push_actor": true,
+  "sections": {
+    "01": {
+      "submission_window_start": "2026-09-01T00:00:00+09:00",
+      "scheduled_deadline": "2026-09-02T23:59:59+09:00",
+      "effective_deadline": "2026-09-03T23:59:59+09:00",
+      "late_window_end": "2026-09-08T23:59:59+09:00",
+      "deadline_note": "문서용 예시 시각입니다. 실제 수업 일정으로 교체해야 합니다."
+    },
+    "02": {
+      "submission_window_start": "2026-09-03T00:00:00+09:00",
+      "scheduled_deadline": "2026-09-04T23:59:59+09:00",
+      "effective_deadline": "2026-09-04T23:59:59+09:00",
+      "late_window_end": "2026-09-10T23:59:59+09:00",
+      "deadline_note": "문서용 예시 시각입니다. 실제 수업 일정으로 교체해야 합니다."
+    }
+  },
+  "grading": {
+    "professor_collaborator_required": true,
+    "assistant_collaborator_required": true,
+    "readme_required": true,
+    "student_id_required": true,
+    "student_name_required": true
+  },
+  "score_rules": {
+    "full": 1.0,
+    "partial": 0.5,
+    "fail": 0.0
+  }
+}

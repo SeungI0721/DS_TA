@@ -1,0 +1,53 @@
+# Python 캐시와 테스트 산출물
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Python 가상환경
+.venv/
+venv/
+env/
+
+# 개인 IDE 설정
+.vscode/
+.idea/
+*.iml
+
+# 비밀정보와 인증 파일
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+serviceAccountKey.json
+
+# 실제 학생 정보와 채점 결과
+data/students.csv
+records/
+output/
+archive/
+
+# 로그와 임시 파일
+*.log
+*.tmp
+*.temp
+*.bak
+*.old
+*.swp
+*~
+
+# 빌드 및 배포 산출물
+build/
+dist/
+out/
+*.egg-info/
+
+# 운영체제 임시 파일
+.DS_Store
+Thumbs.db
+desktop.ini

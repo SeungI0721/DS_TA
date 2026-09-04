@@ -1,0 +1,4 @@
+section,student_id,name,github_id,repository
+01,EXAMPLE001,Example Student One,ds-example-student-01,ds-example-student-01/data-structures-lab
+02,EXAMPLE002,Example Student Two,ds-example-student-02,ds-example-student-02/data-structures-lab
+
