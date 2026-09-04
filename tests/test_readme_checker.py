@@ -1,31 +1,45 @@
-"""향후 README identity 순수 로직의 실행 가능한 명세."""
+"""root README 선택과 NFC identity matching 테스트."""
 
-import pytest
+import unicodedata
 
-
-PHASE_4 = pytest.mark.skip(reason="README identity grading is scheduled for Phase 4")
-
-
-@PHASE_4
-def test_korean_name_matches_after_nfc_normalization():
-    pass
+from github_lab_grader.github_client import GitHubClient
+from github_lab_grader.models import ReadmeStatus, Student
+from github_lab_grader.readme_checker import check_readme_identity
 
 
-@PHASE_4
-def test_root_readme_case_variants_are_accepted():
-    pass
+STUDENT = Student("01", "EXAMPLE001", "가상학생", "student-example", "owner/repo")
 
 
-@PHASE_4
-def test_nested_readme_is_not_accepted():
-    pass
+def test_korean_name_matches_after_nfc_normalization() -> None:
+    decomposed = unicodedata.normalize("NFD", STUDENT.name)
+    result = check_readme_identity(f"학번: EXAMPLE001\n이름: {decomposed}", STUDENT)
+    assert result.status is ReadmeStatus.COMPLETE
 
 
-@PHASE_4
-def test_readme_changed_after_deadline_is_evaluated_at_selected_sha_only():
-    pass
+def test_root_readme_case_variants_are_accepted() -> None:
+    entries = ({"type": "file", "name": "README.MD", "path": "README.MD"},)
+    assert GitHubClient.find_root_readme(entries) == "README.MD"
 
 
-@PHASE_4
-def test_readme_created_only_after_deadline_does_not_count():
-    pass
+def test_nested_readme_is_not_accepted() -> None:
+    entries = ({"type": "file", "name": "README.md", "path": "docs/README.md"},)
+    assert GitHubClient.find_root_readme(entries) is None
+
+
+def test_each_missing_identity_field_is_incomplete() -> None:
+    assert check_readme_identity("EXAMPLE001", STUDENT).status is ReadmeStatus.INCOMPLETE
+    assert check_readme_identity("가상학생", STUDENT).status is ReadmeStatus.INCOMPLETE
+
+
+def test_missing_both_identity_fields_is_incomplete() -> None:
+    result = check_readme_identity("공개 가능한 예시 README", STUDENT)
+    assert result.status is ReadmeStatus.INCOMPLETE
+    assert not result.student_id_found
+    assert not result.student_name_found
+
+
+def test_identity_substrings_are_not_exact_matches() -> None:
+    result = check_readme_identity("EXAMPLE0019 가상학생추가", STUDENT)
+    assert result.status is ReadmeStatus.INCOMPLETE
+    assert not result.student_id_found
+    assert not result.student_name_found

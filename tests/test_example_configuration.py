@@ -17,13 +17,13 @@ def _load_json(relative_path: str) -> dict[str, object]:
 
 
 def test_global_and_weekly_sections_are_consistent() -> None:
-    config = _load_json("config.json")
+    config = _load_json("config.example.json")
     rubric = _load_json("rubrics/week01.json")
     assert set(config["sections"]) == set(rubric["sections"])
 
 
 def test_github_request_settings_are_valid() -> None:
-    config = _load_json("config.json")
+    config = _load_json("config.example.json")
     settings = GitHubClientSettings.from_global_config(config)
     assert settings.api_version == config["github_api_version"]
     assert settings.connect_timeout_seconds > 0
@@ -49,7 +49,7 @@ def test_score_example_matches_weekly_maximum() -> None:
 
 
 def test_students_example_has_only_configured_sections_and_owner_repo_shape() -> None:
-    config = _load_json("config.json")
+    config = _load_json("config.example.json")
     with (ROOT / "data/students.example.csv").open(encoding="utf-8", newline="") as source:
         students = list(csv.DictReader(source))
     assert students

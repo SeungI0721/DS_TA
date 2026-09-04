@@ -26,6 +26,9 @@ env/
 *.pfx
 serviceAccountKey.json
 
+# 실제 수업 계정이 포함되는 로컬 전용 설정
+config.json
+
 # 실제 학생 정보와 채점 결과
 data/students.csv
 records/

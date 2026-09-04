@@ -47,6 +47,9 @@ class SubmissionStatus(StrEnum):
     EXTENDED_ON_TIME = "EXTENDED_ON_TIME"
     LATE = "LATE"
     NOT_SUBMITTED = "NOT_SUBMITTED"
+    EVIDENCE_NOT_SETTLED = "EVIDENCE_NOT_SETTLED"
+    AMBIGUOUS_SUBMISSION = "AMBIGUOUS_SUBMISSION"
+    CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
     UNVERIFIABLE = "UNVERIFIABLE"
     ERROR = "ERROR"
 
@@ -56,6 +59,15 @@ class GradingStatus(StrEnum):
     PARTIAL = "PARTIAL"
     FAIL = "FAIL"
     MANUAL_REVIEW = "MANUAL_REVIEW"
+    ERROR = "ERROR"
+
+
+class ReadmeStatus(StrEnum):
+    NOT_CHECKED = "NOT_CHECKED"
+    COMPLETE = "COMPLETE"
+    INCOMPLETE = "INCOMPLETE"
+    MISSING = "MISSING"
+    UNVERIFIABLE = "UNVERIFIABLE"
     ERROR = "ERROR"
 
 
@@ -96,6 +108,39 @@ class RepositoryMetadata:
     permissions: dict[str, bool] | None
     accessible: bool = True
     rate_limit: RateLimitInfo | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CourseConfig:
+    schema_version: int
+    semester: str
+    course: str
+    professor_github: str
+    assistant_github: str
+    timezone: str
+    sections: tuple[str, ...]
+    total_weeks: int
+    final_practice_weight: float
+    github_api_version: str
+    github_event_settle_delay_hours: float
+    github_event_history_max_age_days: float
+    github_request: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        if not self.semester or not self.course:
+            raise ValueError("semester and course are required")
+        if not self.professor_github or not self.assistant_github:
+            raise ValueError("professor and assistant GitHub IDs are required")
+        if not self.sections or any(not section for section in self.sections):
+            raise ValueError("at least one non-empty section is required")
+        if len(set(self.sections)) != len(self.sections):
+            raise ValueError("sections must be unique")
+        if self.total_weeks <= 0 or self.final_practice_weight < 0:
+            raise ValueError("course numeric settings are invalid")
+        if self.github_event_settle_delay_hours < 0:
+            raise ValueError("github_event_settle_delay_hours must not be negative")
+        if self.github_event_history_max_age_days <= 0:
+            raise ValueError("github_event_history_max_age_days must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,6 +220,28 @@ class WeeklyRubric:
     score_rules: ScoreRules
     schema_version: int = 1
 
+    def __post_init__(self) -> None:
+        if self.week <= 0 or self.max_score <= 0 or not self.sections:
+            raise ValueError("week, max_score, and sections must be valid")
+        if not self.submission_branch or self.submission_branch.startswith("refs/"):
+            raise ValueError("submission_branch must be a branch name or 'default'")
+        if not self.require_student_push_actor:
+            raise ValueError("student PushEvent actor matching is mandatory")
+        if not all(
+            (
+                self.grading.professor_collaborator_required,
+                self.grading.assistant_collaborator_required,
+                self.grading.readme_required,
+                self.grading.student_id_required,
+                self.grading.student_name_required,
+            )
+        ):
+            raise ValueError("Phase 4 mandatory grading requirements cannot be disabled")
+        if not 0 <= self.score_rules.fail <= self.score_rules.partial <= self.score_rules.full:
+            raise ValueError("score rules must be ordered")
+        if self.score_rules.full > self.max_score:
+            raise ValueError("full score must not exceed max_score")
+
 
 @dataclass(frozen=True, slots=True)
 class PushRecord:
@@ -220,6 +287,28 @@ class RepositoryEventsResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SubmissionDecision:
+    status: SubmissionStatus
+    selected_push: PushRecord | None = None
+    evidence_complete: bool = True
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReadmeIdentityResult:
+    status: ReadmeStatus
+    student_id_found: bool
+    student_name_found: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GradeDecision:
+    grading_status: GradingStatus
+    score: float | None
+    manual_review_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CollaboratorCheckResult:
     status: CollaboratorStatus
     checked_at: datetime
@@ -254,9 +343,9 @@ class GradeResult:
     repository: str
     repository_accessible: bool | None
     repository_default_branch: str | None
-    submission_window_start: datetime
-    scheduled_deadline: datetime
-    effective_deadline: datetime
+    submission_window_start: datetime | None
+    scheduled_deadline: datetime | None
+    effective_deadline: datetime | None
     late_window_end: datetime | None
     late_window_source: LateWindowSource
     deadline_note: str
@@ -271,6 +360,7 @@ class GradeResult:
     assistant_collaborator: CollaboratorStatus
     professor_collaborator_checked_at: datetime | None
     assistant_collaborator_checked_at: datetime | None
+    readme_status: ReadmeStatus
     readme_exists: bool | None
     readme_path: str | None
     student_id_found: bool | None
@@ -279,6 +369,7 @@ class GradeResult:
     max_score: float
     grading_status: GradingStatus
     manual_review_required: bool
+    manual_review_reason: str | None
     error_code: str | None
     error_message: str | None
     graded_at: datetime
@@ -287,12 +378,20 @@ class GradeResult:
     evidence: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        _validate_timing(
+        required_timing = (
             self.submission_window_start,
             self.scheduled_deadline,
             self.effective_deadline,
-            self.late_window_end,
         )
+        if all(value is not None for value in required_timing):
+            _validate_timing(
+                self.submission_window_start,  # type: ignore[arg-type]
+                self.scheduled_deadline,  # type: ignore[arg-type]
+                self.effective_deadline,  # type: ignore[arg-type]
+                self.late_window_end,
+            )
+        elif any(value is not None for value in required_timing):
+            raise ValueError("timing fields must be all present or all absent")
         _require_aware(self.graded_at, "graded_at")
         for field_name, value in (
             ("submission_push_time", self.submission_push_time),
@@ -303,3 +402,5 @@ class GradeResult:
                 _require_aware(value, field_name)
         if self.manual_review_required and self.score is not None:
             raise ValueError("manual-review results must not contain an automatic score")
+        if self.score is not None and not 0 <= self.score <= self.max_score:
+            raise ValueError("score must be within zero and max_score")

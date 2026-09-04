@@ -2,7 +2,7 @@
 
 Data Structures 실습 과목의 GitHub 제출 증거를 수집하고 주차별 채점 결과를 보존하기 위한 Windows용 Python CLI 프로젝트이다.
 
-현재 저장소는 **Phase 3 GitHub REST API 연동**까지 구현되어 있다. CLI와 데이터 모델에 더해 인증 provider, 읽기 전용 HTTP client, repository events·collaborator·README-at-SHA 조회가 mock unit test로 검증되어 있다. 실제 주차별 채점 orchestration·JSON 기록·Excel 생성은 아직 연결되지 않았다.
+현재 저장소는 **Phase 4 학생별 채점 orchestration**까지 구현되어 있다. 읽기 전용 GitHub evidence를 제출 선택, collaborator 확인, SHA 고정 README identity 검사와 순수 점수 결정에 연결해 메모리의 `GradeResult`를 생성한다. 불변 JSON 기록·Excel 생성·C 실행은 아직 구현하지 않았다.
 
 ## 프로젝트 목적
 
@@ -32,13 +32,15 @@ C 소스 검사와 학생 프로그램 실행은 Version 1 범위가 아니다.
 | PushEvent 정규화와 event coverage metadata | 구현, mock unit test 검증 |
 | collaborator 및 README-at-SHA API method | 구현, mock unit test 검증 |
 | 선택적 read-only live smoke test | 구현, 실제 실행은 opt-in |
-| Phase 4 이후 동작의 pytest 명세 | scaffolded, 현재 skip |
-| 설정 파일 로딩과 실제 채점 로직 | 미구현 |
+| typed 설정 loading과 private config 추적 방지 | 구현, unit test 검증 |
+| 학생별·section/week 채점 orchestration | 구현, mock integration test 검증 |
+| 제출 선택·README identity·순수 점수 결정 | 구현, unit test 검증 |
+| 기술적 불확실성의 null/manual-review 보존 | 구현, unit test 검증 |
 | 불변 JSON 기록과 regrade archive | 미구현 |
 | Excel 보고서와 누적 성적표 | 미구현 |
 | 실제 학생 저장소 검증 | 미수행 |
 
-현재 `grade`, `rebuild-gradebook`, `final-report`, `validate-config` 명령은 인자 구조만 정의한다. 실행하면 grading orchestration 미구현 오류로 종료하는 것이 정상이다. GitHub client는 Python API로 제공되며 아직 CLI 채점 흐름에 연결되지 않았다.
+현재 `grade`, `rebuild-gradebook`, `final-report`, `validate-config` 명령은 인자 구조만 정의한다. Phase 4 orchestration은 Python API로 제공되며 실제 학생 CSV를 사용하는 CLI 실행과 record write는 Phase 5 범위로 남아 있다.
 
 ## 전체 프로젝트 구조
 
@@ -46,7 +48,8 @@ C 소스 검사와 학생 프로그램 실행은 Version 1 범위가 아니다.
 DS-TA/
 ├─ README.md
 ├─ main.py
-├─ config.json
+├─ config.example.json
+├─ config.json                 # local only, Git에서 제외
 ├─ requirements.txt
 ├─ pytest.ini
 ├─ .env.example
@@ -65,6 +68,7 @@ DS-TA/
 │  ├─ collaborator_checker.py
 │  ├─ readme_checker.py
 │  ├─ grader.py
+│  ├─ orchestrator.py
 │  ├─ record_store.py
 │  ├─ excel_report.py
 │  ├─ gradebook.py
@@ -75,11 +79,13 @@ DS-TA/
    ├─ test_cli.py
    ├─ test_models.py
    ├─ test_example_configuration.py
+   ├─ test_config_loader.py
    ├─ test_github_client.py
    ├─ test_live_github.py
    ├─ test_submission_checker.py
    ├─ test_readme_checker.py
    ├─ test_grader.py
+   ├─ test_orchestrator.py
    └─ test_record_and_gradebook_scaffold.py
 ```
 
@@ -89,12 +95,15 @@ DS-TA/
 | `github_lab_grader/models.py` | 상태 enum과 typed evidence model |
 | `github_lab_grader/auth.py` | GitHub CLI, 환경변수, `.env` 순서의 인증 provider |
 | `github_lab_grader/github_client.py` | 읽기 전용 GitHub REST client와 오류·재시도 처리 |
+| `github_lab_grader/orchestrator.py` | 학생별 evidence acquisition과 section/week 격리 실행 |
+| `config.example.json` | 실제 계정이 없는 공개 설정 template |
+| `config.json` | 실제 수업 계정을 둘 수 있는 ignored local runtime 설정 |
 | `github_lab_grader/c_checker.py` | 실행 기능이 없는 향후 C 채점 placeholder |
 | `data/students.example.csv` | 공개 가능한 가상 학생 데이터 형식 |
 | `rubrics/week01.json` | 실제 사용 전에 교체해야 하는 문서용 주차 설정 |
 | `tests/` | 현재 기반 검증과 이후 Phase 동작 명세 |
 
-`records/`, `output/`, `archive/`, `data/students.csv`는 실행 중 로컬에서 만들어질 개인정보·성적 자료이므로 저장소 트리에 포함하지 않는다.
+`config.json`, `records/`, `output/`, `archive/`, `data/students.csv`는 실제 계정·개인정보·성적 자료를 포함할 수 있으므로 저장소에 추적하지 않는다.
 
 ## 사용 기술
 
@@ -139,14 +148,24 @@ python main.py grade --week 1 --all-sections
 
 ## 설정 파일
 
-### `config.json`
+새 clone에서는 공개 template을 local runtime 설정으로 복사한다.
 
-학기, 과목, collaborator 계정, timezone, 분반 목록, 전체 주차 수, 환산 배점, GitHub API version을 정의한다.
+```powershell
+Copy-Item .\config.example.json .\config.json
+```
+
+### `config.example.json`과 `config.json`
+
+두 파일은 학기, 과목, collaborator 계정, timezone, 분반 목록, 전체 주차 수, event settle/retention 정책, 환산 배점, GitHub API version을 같은 schema로 정의한다.
 
 - `sections`는 문자열 목록이며 `01`, `02`처럼 앞자리 0을 보존한다.
 - 분반 수를 Python 코드에 고정하지 않는다.
-- `professor_github`와 `assistant_github`의 placeholder는 실제 채점 전에 교체한다.
+- 추적되는 `config.example.json`에는 fictional account만 둔다.
+- 실제 `professor_github`와 `assistant_github`는 ignored local `config.json`에만 입력한다.
+- runtime은 `config.json`이 Git index에 추적된 상태면 account 값을 출력하지 않고 `ConfigurationSecurityError`로 처리를 거부한다.
 - 모든 수업 시각은 `Asia/Seoul` 기준이다.
+
+`.gitignore`는 이미 추적 중인 파일을 자동으로 제거하지 않는다. `config.json`이 `git ls-files`에 나타나면 실제 계정을 입력하거나 commit하기 전에 index에서 제거해야 한다. 이 규칙은 `config.json`만 대상으로 하며 `rubrics/*.json`은 계속 추적한다.
 
 ### `data/students.csv`
 
@@ -201,7 +220,7 @@ GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 
 
 ## 채점 기준
 
-아래 정책은 확정된 설계이며 계산 함수는 Phase 3에서 구현한다.
+아래 정책은 Phase 4 순수 decision 함수와 orchestration에서 구현되어 있다.
 
 | 결과 | 조건 | 점수 |
 | --- | --- | ---: |
@@ -211,6 +230,23 @@ GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 
 | MANUAL_REVIEW | API·권한·이력·증거 불확실성 | blank/null |
 
 학번과 이름이 모두 없더라도 나머지 필수 조건과 README가 충족되면 현재 정책상 0.5점이다. 기술적 불확실성을 0점으로 자동 변환하지 않는다.
+
+## Phase 4 orchestration
+
+`GradingOrchestrator.grade_student()`는 다음 순서를 사용한다.
+
+1. section/week timing과 `late_window_end`를 해석한다.
+2. settle delay가 지나지 않았으면 API를 호출하지 않고 `EVIDENCE_NOT_SETTLED`로 반환한다.
+3. repository metadata와 Events API evidence를 읽는다.
+4. 학생 actor와 branch ref가 일치하는 최신 accepted PushEvent를 선택한다.
+5. accepted submission이 없을 때만 late 또는 신뢰 가능한 `NOT_SUBMITTED`를 판정한다.
+6. 교수자와 조교 collaborator를 독립적으로 확인한다.
+7. 두 collaborator가 `ACTIVE`일 때만 selected head SHA의 root README를 조회한다.
+8. NFC 정규화 뒤 정확한 학번·이름을 검사하고 순수 score decision을 수행한다.
+
+`grade_section_week()`는 section 학생을 순회하며 각 결과를 독립적으로 보존한다. 한 repository의 API 또는 parsing 오류가 나머지 학생 처리를 중단하지 않는다. `GradeResult`는 timing, selected PushEvent와 head SHA, collaborator 상태, README 경로·identity 결과, score, manual-review 이유와 coverage를 포함하지만 token이나 README 본문은 저장하지 않는다.
+
+불필요한 API 호출을 줄이기 위해 `LATE`, 신뢰 가능한 `NOT_SUBMITTED`, collaborator `MISSING`처럼 점수가 이미 확정된 경우 README를 조회하지 않는다.
 
 ## 제출 시각 판정
 
@@ -270,16 +306,18 @@ JSON 기록이 canonical evidence이며 Excel은 JSON에서 다시 생성하는 
 
 ## 테스트 및 검증
 
-2026-09-04 Phase 3 점검 기준:
+2026-09-04 Phase 4 점검 기준:
 
-- offline pytest 결과: 48 passed, 28 skipped, 0 failed
-- 개발자 소유 공개 repository 대상 read-only live pytest 결과: 1 passed, 75 deselected, 0 failed
-- pytest 기반 모델·CLI·예시 설정 regression test 실행
+- offline pytest 결과: 123 passed, 3 skipped, 0 failed
+- 개발자 소유 공개 repository 대상 read-only live pytest 결과: 1 passed, 125 deselected, 0 failed
+- pytest 기반 Phase 2/3 regression과 Phase 4 pure/orchestration test 실행
 - 인증, HTTP status, timeout, retry, pagination, PushEvent, collaborator, README-at-SHA를 fake HTTP response로 검증
+- 제출 경계, actor/ref filtering, same-second ambiguity, Events coverage, settle delay, score matrix, section 격리를 offline 검증
+- fictional Student와 synthetic 과거 window를 사용한 read-only Phase 4 live orchestration에서 structured `GradeResult` 생성 확인
 - live test에서 GitHub CLI 인증, repository metadata·permissions, Events API, rate-limit header, root contents, README UTF-8 decoding, 명시적 commit SHA 조회, 현재 owner collaborator 상태 검증
 - 선택한 live repository에는 최근 PushEvent가 없어 live PushEvent normalization은 수행하지 않았으며 offline test로만 검증
 - Python syntax/import validation 실행
-- Phase 4 이후의 실제 채점·기록·성적표 요구사항은 test scaffold로 수집
+- Phase 5 이후의 불변 기록과 성적표 요구사항은 test scaffold로 보존
 - 실제 학생 저장소 검증은 수행하지 않음
 
 skip된 테스트를 통과한 기능으로 해석해서는 안 된다.
@@ -306,6 +344,7 @@ $env:GITHUB_LIVE_REPOSITORY='owner/repository'
 다음 경로는 Git에 추가하지 않는다.
 
 - `.env`, `.env.*` (`.env.example` 제외)
+- `config.json` (`config.example.json`은 공개 template으로 추적)
 - `data/students.csv`
 - `records/`
 - `output/`
@@ -313,7 +352,7 @@ $env:GITHUB_LIVE_REPOSITORY='owner/repository'
 - `.venv/`
 - `.vscode/`, `.idea/`
 
-이 파일에는 학생 이름·학번·GitHub 계정·저장소·점수·PushEvent 시각·commit SHA·README snapshot·토큰이 포함될 수 있다.
+이 파일에는 실제 교수자·조교 계정, 학생 이름·학번·GitHub 계정·저장소·점수·PushEvent 시각·commit SHA·README snapshot·토큰이 포함될 수 있다.
 
 `.gitignore`는 이미 추적된 파일이나 기존 Git history에서 파일을 제거하지 않는다. 민감정보가 commit된 경우 최신 파일만 삭제해서 해결된 것으로 간주하지 않으며, 추가 전파를 멈추고 history rewrite 필요성을 검토하고 노출된 credential을 회전해야 한다. Git history 변경은 명시적 승인 없이 수행하지 않는다.
 
@@ -322,7 +361,7 @@ $env:GITHUB_LIVE_REPOSITORY='owner/repository'
 - GitHub repository event timeline은 영구 archive가 아니다.
 - 현재 공식 문서 기준 최대 약 300개 이벤트와 최근 약 30일 범위만 제공된다.
 - repository event 반영은 약 30초에서 최대 6시간 지연될 수 있다.
-- 일반 채점은 `effective_deadline + 6시간` 이후 수행해야 한다.
+- 일반 채점은 최소 `effective_deadline + github_event_settle_delay_hours` 이후 수행하며 accepted push가 없을 때에는 late window evidence도 settle될 때까지 기다린다.
 - `--force-early-grading`은 불완전한 이벤트 증거를 만들 수 있으므로 경고와 manual-review 상태가 필요하다.
 - 이벤트가 300개 한도에서 잘렸거나 필요한 기간을 덮지 못하면 `NOT_SUBMITTED`로 단정하지 않는다.
 - collaborator API는 채점 시점의 접근 상태만 확인하며 초대·수락 시점을 역사적으로 증명하지 않는다.
@@ -337,6 +376,8 @@ $env:GITHUB_LIVE_REPOSITORY='owner/repository'
 - [REST API endpoints for collaborators](https://docs.github.com/en/rest/collaborators/collaborators)
 
 ## 향후 확장
+
+Phase 5는 `GradeResult`를 canonical immutable JSON으로 기록하고 regrade revision/archive, atomic write, provenance 보존과 master-record reconstruction을 구현한다. Excel 출력은 그 canonical record를 읽는 이후 보고 단계로 유지한다.
 
 `c_checker.py`는 현재 항상 `NotImplementedError`를 발생시키는 안전한 placeholder이며 학생 코드를 실행하지 않는다.
 

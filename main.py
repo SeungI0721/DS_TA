@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+
+from github_lab_grader.config_loader import (
+    ConfigurationError,
+    load_global_config,
+    load_weekly_rubric,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,7 +34,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    parser.error(f"{args.command!r} grading orchestration is not implemented")
+    try:
+        if args.command == "validate-config":
+            load_global_config(Path("config.json"))
+            for rubric_path in sorted(Path("rubrics").glob("week*.json")):
+                load_weekly_rubric(rubric_path)
+            return 0
+        if args.command == "grade":
+            # 실제 학생을 읽기 전에 private runtime config의 Git 추적 여부부터 확인한다.
+            load_global_config(Path("config.json"))
+    except ConfigurationError as exc:
+        parser.error(str(exc))
+    parser.error(f"{args.command!r} CLI record workflow is scheduled for a later phase")
     return 2
 
 
