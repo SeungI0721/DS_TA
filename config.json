@@ -8,6 +8,13 @@
   "sections": ["01", "02"],
   "total_weeks": 14,
   "final_practice_weight": 10.0,
-  "github_api_version": "2026-03-10"
+  "github_api_version": "2026-03-10",
+  "github_request": {
+    "connect_timeout_seconds": 5.0,
+    "read_timeout_seconds": 20.0,
+    "max_retries": 2,
+    "retry_backoff_seconds": 0.5,
+    "max_retry_after_seconds": 60.0,
+    "rate_limit_warning_threshold": 100
+  }
 }
-

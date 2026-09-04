@@ -5,6 +5,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from github_lab_grader.github_client import GitHubClientSettings
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,6 +20,15 @@ def test_global_and_weekly_sections_are_consistent() -> None:
     config = _load_json("config.json")
     rubric = _load_json("rubrics/week01.json")
     assert set(config["sections"]) == set(rubric["sections"])
+
+
+def test_github_request_settings_are_valid() -> None:
+    config = _load_json("config.json")
+    settings = GitHubClientSettings.from_global_config(config)
+    assert settings.api_version == config["github_api_version"]
+    assert settings.connect_timeout_seconds > 0
+    assert settings.read_timeout_seconds > 0
+    assert settings.max_retries >= 0
 
 
 def test_weekly_example_uses_aware_ordered_iso_timestamps() -> None:
@@ -47,6 +58,10 @@ def test_students_example_has_only_configured_sections_and_owner_repo_shape() ->
 
 
 def test_environment_example_contains_no_token_value() -> None:
-    value = (ROOT / ".env.example").read_text(encoding="utf-8")
-    assert "GITHUB_TOKEN=" in value
-    assert value.split("GITHUB_TOKEN=", 1)[1].strip() == ""
+    lines = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assignments = dict(
+        line.split("=", 1)
+        for line in lines
+        if line and not line.startswith("#") and "=" in line
+    )
+    assert assignments["GITHUB_TOKEN"] == ""

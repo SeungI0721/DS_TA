@@ -1,4 +1,4 @@
-"""Command-line entry point for the local grading assistant."""
+"""로컬 채점 도구의 CLI entry point."""
 
 from __future__ import annotations
 
@@ -27,10 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    parser.error(f"{args.command!r} is scaffolded but not implemented in Phase 2")
+    parser.error(f"{args.command!r} grading orchestration is not implemented")
     return 2
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

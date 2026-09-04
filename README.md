@@ -2,7 +2,7 @@
 
 Data Structures 실습 과목의 GitHub 제출 증거를 수집하고 주차별 채점 결과를 보존하기 위한 Windows용 Python CLI 프로젝트이다.
 
-현재 저장소는 **Phase 2 기반 구조**까지 구현되어 있다. CLI 명령 구조, 데이터 모델, 안전한 예시 설정, 테스트 명세가 포함되어 있으며, 실제 GitHub API 호출·채점·JSON 기록·Excel 생성은 아직 연결되지 않았다.
+현재 저장소는 **Phase 3 GitHub REST API 연동**까지 구현되어 있다. CLI와 데이터 모델에 더해 인증 provider, 읽기 전용 HTTP client, repository events·collaborator·README-at-SHA 조회가 mock unit test로 검증되어 있다. 실제 주차별 채점 orchestration·JSON 기록·Excel 생성은 아직 연결되지 않았다.
 
 ## 프로젝트 목적
 
@@ -27,14 +27,18 @@ C 소스 검사와 학생 프로그램 실행은 Version 1 범위가 아니다.
 | 학생·마감·PushEvent·채점 결과 데이터 모델 | 구현 |
 | timezone-aware 모델 검증 | 구현 |
 | 안전한 예시 설정과 개인정보 제외 규칙 | 구현 |
-| Phase 3 이후 동작의 pytest 명세 | scaffolded, 현재 skip |
+| 인증 provider와 GitHub REST 읽기 client | 구현, mock unit test 검증 |
+| repository metadata와 events pagination | 구현, mock unit test 검증 |
+| PushEvent 정규화와 event coverage metadata | 구현, mock unit test 검증 |
+| collaborator 및 README-at-SHA API method | 구현, mock unit test 검증 |
+| 선택적 read-only live smoke test | 구현, 실제 실행은 opt-in |
+| Phase 4 이후 동작의 pytest 명세 | scaffolded, 현재 skip |
 | 설정 파일 로딩과 실제 채점 로직 | 미구현 |
-| GitHub REST API 연동 | 미구현 |
 | 불변 JSON 기록과 regrade archive | 미구현 |
 | Excel 보고서와 누적 성적표 | 미구현 |
 | 실제 학생 저장소 검증 | 미수행 |
 
-현재 `grade`, `rebuild-gradebook`, `final-report`, `validate-config` 명령은 인자 구조만 정의한다. 실행하면 Phase 2 미구현 오류로 종료하는 것이 정상이다.
+현재 `grade`, `rebuild-gradebook`, `final-report`, `validate-config` 명령은 인자 구조만 정의한다. 실행하면 grading orchestration 미구현 오류로 종료하는 것이 정상이다. GitHub client는 Python API로 제공되며 아직 CLI 채점 흐름에 연결되지 않았다.
 
 ## 전체 프로젝트 구조
 
@@ -44,6 +48,7 @@ DS-TA/
 ├─ main.py
 ├─ config.json
 ├─ requirements.txt
+├─ pytest.ini
 ├─ .env.example
 ├─ .gitignore
 ├─ data/
@@ -52,6 +57,7 @@ DS-TA/
 │  └─ week01.json
 ├─ github_lab_grader/
 │  ├─ __init__.py
+│  ├─ auth.py
 │  ├─ models.py
 │  ├─ config_loader.py
 │  ├─ github_client.py
@@ -65,9 +71,12 @@ DS-TA/
 │  └─ c_checker.py
 └─ tests/
    ├─ conftest.py
+   ├─ test_auth.py
    ├─ test_cli.py
    ├─ test_models.py
    ├─ test_example_configuration.py
+   ├─ test_github_client.py
+   ├─ test_live_github.py
    ├─ test_submission_checker.py
    ├─ test_readme_checker.py
    ├─ test_grader.py
@@ -78,7 +87,8 @@ DS-TA/
 | --- | --- |
 | `main.py` | CLI entry point와 명령 인자 구조 |
 | `github_lab_grader/models.py` | 상태 enum과 typed evidence model |
-| `github_lab_grader/github_client.py` | Phase 4 GitHub REST 경계 placeholder |
+| `github_lab_grader/auth.py` | GitHub CLI, 환경변수, `.env` 순서의 인증 provider |
+| `github_lab_grader/github_client.py` | 읽기 전용 GitHub REST client와 오류·재시도 처리 |
 | `github_lab_grader/c_checker.py` | 실행 기능이 없는 향후 C 채점 placeholder |
 | `data/students.example.csv` | 공개 가능한 가상 학생 데이터 형식 |
 | `rubrics/week01.json` | 실제 사용 전에 교체해야 하는 문서용 주차 설정 |
@@ -94,9 +104,11 @@ DS-TA/
 | Python | 3.11 이상 |
 | CLI | Python 표준 라이브러리 `argparse` |
 | 데이터 모델 | `dataclasses`, `enum.StrEnum` |
+| HTTP | requests |
+| 로컬 환경변수 파일 | python-dotenv |
 | 테스트 | pytest |
 
-현재 Phase 2에서 설치가 필요한 외부 패키지는 pytest뿐이다. `requests`, `python-dotenv`, `openpyxl`은 각각 GitHub 연동과 Excel 생성 단계에서 실제 사용 코드가 추가될 때 의존성에 포함한다.
+현재 의존성은 `requests`, `python-dotenv`, `pytest`이다. Excel 생성이 구현되지 않았으므로 `openpyxl`은 아직 포함하지 않는다.
 
 ## 설치 및 실행 방법
 
@@ -160,9 +172,32 @@ naive timestamp는 허용하지 않는다.
 
 ### 인증
 
-인증 연동은 아직 구현되지 않았다. Phase 4에서는 인증된 GitHub CLI session을 우선 사용하고 `GITHUB_TOKEN` 환경변수를 fallback으로 사용할 예정이다. 토큰은 코드·설정·로그·채점 기록에 저장하지 않는다.
+인증 provider는 다음 순서로 credential을 탐색한다.
 
-로컬 `.env`가 필요해지면 `.env.example`을 복사해 사용한다. 실제 `.env`는 추적하지 않는다.
+1. 인증된 GitHub CLI session의 `gh auth token`
+2. process environment의 `GITHUB_TOKEN`
+3. repository root `.env`의 `GITHUB_TOKEN`
+
+GitHub CLI가 없거나 인증되지 않았으면 다음 provider로 안전하게 이동한다. 토큰은 CLI argument로 받지 않으며 repr, 예외 메시지, 로그, JSON 기록에 포함하지 않는다. 로컬 `.env`는 추적하지 않는다.
+
+GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 설정을 사용한다. 현재 version header는 `2026-03-10`이며 connect/read timeout, retry 횟수, backoff, 허용할 최대 `Retry-After`, rate-limit 경고 기준을 한 위치에서 관리한다.
+
+## GitHub REST API 연동
+
+현재 client가 제공하는 읽기 기능은 다음과 같다.
+
+- authenticated user login 확인
+- repository ID, full name, 공개 범위, default branch, caller permissions 조회
+- `GET /repos/{owner}/{repo}/events`와 `Link` 기반 pagination
+- 최대 300개 event, page별 rate-limit, 조회 시각, oldest/newest 시각 보존
+- PushEvent의 event ID, actor, `created_at`, ref, head/before SHA, push ID 정규화
+- 현재 collaborator 상태 조회
+- 명시적 ref의 repository root entry 조회
+- 같은 selected SHA를 사용한 root README 탐색과 UTF-8 content 조회
+
+모든 HTTP 호출은 timeout을 사용한다. 502, 503, 504와 network/timeout 오류는 설정된 횟수 안에서 exponential backoff로 재시도한다. 401, 권한 오류로 확인된 403, 404, 409, 422는 재시도하지 않는다. 403/429 rate limit은 `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After`, GitHub 오류 message를 함께 판별한다. 공식 header에서 계산한 대기가 설정된 최대 시간 이내일 때만 제한적으로 재시도하며, 그 밖에는 `RATE_LIMITED` 오류와 metadata를 caller에 반환한다.
+
+오류 분류는 `AUTH_ERROR`, `PERMISSION_ERROR`, `NOT_FOUND`, `RATE_LIMITED`, `NETWORK_ERROR`, `TIMEOUT`, `API_ERROR`, `INVALID_RESPONSE`, `UNRESOLVABLE_REF`를 사용한다. 응답 본문은 예외 문자열에 복사하지 않는다.
 
 ## 채점 기준
 
@@ -235,14 +270,36 @@ JSON 기록이 canonical evidence이며 Excel은 JSON에서 다시 생성하는 
 
 ## 테스트 및 검증
 
-2026-09-04 Phase 2 최종 점검 기준:
+2026-09-04 Phase 3 점검 기준:
 
-- pytest 기반 모델·CLI·예시 설정 검증 실행
+- offline pytest 결과: 48 passed, 28 skipped, 0 failed
+- 개발자 소유 공개 repository 대상 read-only live pytest 결과: 1 passed, 75 deselected, 0 failed
+- pytest 기반 모델·CLI·예시 설정 regression test 실행
+- 인증, HTTP status, timeout, retry, pagination, PushEvent, collaborator, README-at-SHA를 fake HTTP response로 검증
+- live test에서 GitHub CLI 인증, repository metadata·permissions, Events API, rate-limit header, root contents, README UTF-8 decoding, 명시적 commit SHA 조회, 현재 owner collaborator 상태 검증
+- 선택한 live repository에는 최근 PushEvent가 없어 live PushEvent normalization은 수행하지 않았으며 offline test로만 검증
 - Python syntax/import validation 실행
-- Phase 3~6의 경계·README·점수·기록·성적표 요구사항은 test scaffold로 수집
-- 실제 GitHub API, mock API response, 실제 학생 저장소 검증은 아직 수행하지 않음
+- Phase 4 이후의 실제 채점·기록·성적표 요구사항은 test scaffold로 수집
+- 실제 학생 저장소 검증은 수행하지 않음
 
 skip된 테스트를 통과한 기능으로 해석해서는 안 된다.
+
+일반 test suite는 network와 credential 없이 실행된다.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+.\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+```
+
+선택적 live smoke test는 소유하거나 명시적으로 사용 허가를 받은 비학생 repository에서만 실행한다. 아래 변수는 process environment 또는 추적되지 않는 `.env`에 설정하며, repository 이름을 source나 README에 기록하지 않는다.
+
+```powershell
+$env:RUN_GITHUB_LIVE_TESTS='1'
+$env:GITHUB_LIVE_REPOSITORY='owner/repository'
+.\.venv\Scripts\python.exe -m pytest -m live -q -p no:cacheprovider
+```
+
+인증 또는 opt-in 변수가 없으면 live test는 안전하게 skip된다. 위 live 결과는 개발자 소유 repository에서 일회성 process environment를 사용해 확인한 smoke test이며 모든 환경이나 Phase 4 채점 orchestration의 동작을 보장하지 않는다.
 
 ## 개인정보 및 보안
 

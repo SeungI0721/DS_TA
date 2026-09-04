@@ -1,4 +1,4 @@
-"""Typed domain models shared by grading, persistence, and reporting layers."""
+"""채점, 증거 보존, 보고 계층이 공유하는 typed domain model."""
 
 from __future__ import annotations
 
@@ -63,6 +63,39 @@ class LateWindowSource(StrEnum):
     EXPLICIT = "EXPLICIT"
     NEXT_WEEK_DERIVED = "NEXT_WEEK_DERIVED"
     UNAVAILABLE = "UNAVAILABLE"
+
+
+class GitHubErrorCode(StrEnum):
+    AUTH_ERROR = "AUTH_ERROR"
+    PERMISSION_ERROR = "PERMISSION_ERROR"
+    NOT_FOUND = "NOT_FOUND"
+    RATE_LIMITED = "RATE_LIMITED"
+    NETWORK_ERROR = "NETWORK_ERROR"
+    TIMEOUT = "TIMEOUT"
+    API_ERROR = "API_ERROR"
+    INVALID_RESPONSE = "INVALID_RESPONSE"
+    UNRESOLVABLE_REF = "UNRESOLVABLE_REF"
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitInfo:
+    limit: int | None = None
+    remaining: int | None = None
+    reset_epoch: int | None = None
+    retry_after_seconds: float | None = None
+    resource: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryMetadata:
+    repository_id: int
+    full_name: str
+    private: bool
+    visibility: str | None
+    default_branch: str
+    permissions: dict[str, bool] | None
+    accessible: bool = True
+    rate_limit: RateLimitInfo | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,8 +198,8 @@ class EventCoverage:
     oldest_event_at: datetime | None
     newest_event_at: datetime | None
     reached_documented_limit: bool
-    latency_window_complete: bool
-    assignment_window_covered: bool
+    latency_window_complete: bool | None
+    assignment_window_covered: bool | None
     notes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -175,6 +208,38 @@ class EventCoverage:
             _require_aware(self.oldest_event_at, "oldest_event_at")
         if self.newest_event_at is not None:
             _require_aware(self.newest_event_at, "newest_event_at")
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryEventsResult:
+    raw_events: tuple[dict[str, Any], ...]
+    push_events: tuple[PushRecord, ...]
+    malformed_push_events: tuple[str, ...]
+    coverage: EventCoverage
+    page_rate_limits: tuple[RateLimitInfo, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CollaboratorCheckResult:
+    status: CollaboratorStatus
+    checked_at: datetime
+    rate_limit: RateLimitInfo | None = None
+    error_code: GitHubErrorCode | None = None
+    note: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_aware(self.checked_at, "checked_at")
+
+
+@dataclass(frozen=True, slots=True)
+class ReadmeAtSha:
+    exists: bool
+    ref: str
+    path: str | None = None
+    blob_sha: str | None = None
+    content: bytes | None = field(default=None, repr=False)
+    text: str | None = field(default=None, repr=False)
+    rate_limits: tuple[RateLimitInfo, ...] = ()
 
 
 @dataclass(slots=True)

@@ -1,2 +1,1 @@
-"""README-at-SHA discovery and deterministic identity checks (Phase 3/4)."""
-
+"""GitHub client가 가져온 README에서 identity를 검사할 순수 계층 placeholder."""

@@ -1,2 +1,1 @@
-"""Pure weekly score calculation (Phase 3)."""
-
+"""향후 주차별 점수를 순수 함수로 계산할 계층 placeholder."""

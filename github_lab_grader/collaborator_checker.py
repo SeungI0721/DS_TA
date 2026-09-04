@@ -1,2 +1,1 @@
-"""Maps collaborator API evidence to typed statuses (Phase 4)."""
-
+"""GitHub client 결과를 실제 채점에 결합할 collaborator 계층 placeholder."""
