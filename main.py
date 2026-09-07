@@ -14,9 +14,19 @@ from github_lab_grader.config_loader import (
     load_weekly_rubric,
 )
 from github_lab_grader.github_client import GitHubClient, GitHubClientSettings
+from github_lab_grader.gradebook import build_all_section_gradebooks
 from github_lab_grader.grading_workflow import grade_and_persist
 from github_lab_grader.orchestrator import GradingOrchestrator
 from github_lab_grader.record_store import RecordStore, RecordStoreError
+from github_lab_grader.excel_report import ExcelReportWriter, ReportError
+
+
+def _display_path(path: Path) -> str:
+    """CLI에는 project-relative output 경로만 표시한다."""
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        return path.name
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,7 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
     grade.add_argument("--dry-run", action="store_true")
     grade.add_argument("--force-early-grading", action="store_true")
 
-    subparsers.add_parser("rebuild-gradebook", help="Rebuild workbooks from JSON records")
+    week_report = subparsers.add_parser("week-report", help="Create weekly reports from JSON records")
+    week_report.add_argument("--week", type=int, required=True)
+    week_scope = week_report.add_mutually_exclusive_group()
+    week_scope.add_argument("--section")
+    week_scope.add_argument("--all-sections", action="store_true")
+
+    rebuild = subparsers.add_parser("rebuild-gradebook", help="Rebuild workbooks from JSON records")
+    rebuild.set_defaults(all_sections=True)
     subparsers.add_parser("final-report", help="Create the all-sections workbook")
     subparsers.add_parser("validate-config", help="Validate configuration without grading")
     return parser
@@ -47,6 +64,43 @@ def main(argv: list[str] | None = None) -> int:
             load_global_config(Path("config.json"))
             for rubric_path in sorted(Path("rubrics").glob("week*.json")):
                 load_weekly_rubric(rubric_path)
+            return 0
+        if args.command in {"week-report", "rebuild-gradebook", "final-report"}:
+            # 보고 명령은 canonical/local 입력만 읽으며 인증 provider나 GitHub client를 만들지 않는다.
+            course = load_global_config(Path("config.json"))
+            students = load_students(Path("data/students.csv"))
+            rubrics = {
+                item.week: item
+                for item in (
+                    load_weekly_rubric(path)
+                    for path in sorted(Path("rubrics").glob("week*.json"))
+                )
+            }
+            store = RecordStore()
+            writer = ExcelReportWriter()
+            if args.command == "week-report":
+                sections = (args.section,) if args.section else course.sections
+                unknown = tuple(section for section in sections if section not in course.sections)
+                if unknown:
+                    parser.error("section is not configured")
+                records = [store.load(section, args.week) for section in sections]
+                rubric = rubrics.get(args.week)
+                if rubric is None:
+                    parser.error("weekly rubric is not configured")
+                path = writer.write_weekly_report(records, rubric)
+                print(f"WEEK_REPORT_CREATED week={args.week} path={_display_path(path)}")
+                return 0
+            records = store.list_records()
+            gradebooks = build_all_section_gradebooks(course, records, rubrics, students)
+            if args.command == "rebuild-gradebook":
+                path = writer.write_final_report(gradebooks)
+                print(f"GRADEBOOK_REBUILT path={_display_path(path)}")
+                return 0
+            path = writer.write_final_report(gradebooks)
+            incomplete = sum(
+                row.final_weighted_score is None for item in gradebooks for row in item.rows
+            )
+            print(f"FINAL_REPORT_CREATED path={_display_path(path)} incomplete={incomplete}")
             return 0
         if args.command == "grade":
             if args.regrade_reason is not None and not args.regrade:
@@ -93,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"null={summary['ungraded_or_null']} errors={summary['errors']}"
                 )
             return 0
-    except (ConfigurationError, RecordStoreError, ValueError) as exc:
+    except (ConfigurationError, RecordStoreError, ReportError, ValueError) as exc:
         parser.error(str(exc))
     parser.error(f"{args.command!r} CLI record workflow is scheduled for a later phase")
     return 2

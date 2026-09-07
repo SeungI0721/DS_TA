@@ -28,3 +28,30 @@ def test_validate_config_uses_local_runtime_file(monkeypatch, tmp_path) -> None:
     assert main(["validate-config"]) == 0
     assert len(calls) == 1
     assert calls[0].as_posix() == "config.json"
+
+
+def test_report_cli_never_initializes_github(monkeypatch, tmp_path) -> None:
+    class Store:
+        def load(self, section, week):
+            return {"section": section, "week": week, "students": []}
+
+    class Writer:
+        def write_weekly_report(self, records, rubric):
+            assert [record["section"] for record in records] == ["01"]
+            return tmp_path / "week01_results.xlsx"
+
+    course = type("Course", (), {"sections": ("01",)})()
+    monkeypatch.setattr("main.load_global_config", lambda path: course)
+    monkeypatch.setattr("main.load_students", lambda path: [])
+    monkeypatch.setattr("main.load_weekly_rubric", lambda path: type("Rubric", (), {"week": 1})())
+    monkeypatch.setattr("main.RecordStore", Store)
+    monkeypatch.setattr("main.ExcelReportWriter", Writer)
+    monkeypatch.setattr("main.default_auth_provider", lambda: pytest.fail("reporting must not authenticate"))
+    assert main(["week-report", "--week", "1", "--section", "01"]) == 0
+
+
+def test_report_cli_scopes_are_explicit() -> None:
+    parser = build_parser()
+    assert parser.parse_args(["rebuild-gradebook"]).all_sections
+    args = parser.parse_args(["week-report", "--week", "1"])
+    assert args.section is None and not args.all_sections
