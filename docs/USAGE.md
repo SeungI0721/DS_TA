@@ -74,9 +74,7 @@ section,student_id,name,github_id,repository
 
 주차별 채점 조건은 rubric이 결정한다. `scoring_mode`, 필수 collaborator 역할, README identity 필요 여부, `enforce_submission_window_start`, `enforce_submission_branch`, `use_late_window`를 주차마다 다르게 지정할 수 있다. `enforce_submission_branch: false`이면 이름과 관계없이 정상 브랜치 PushEvent(`refs/heads/...`)를 인정하며 tag ref는 인정하지 않는다. true이면 `submission_branch`가 `default`일 때 저장소 기본 브랜치만, 명시적 이름일 때 해당 브랜치만 인정한다. 시작 경계를 사용하는 과제는 `submission_window_start <= PushEvent.created_at`을 적용하고, deadline-only 과제는 `enforce_submission_window_start: false`로 설정해 deadline 이전 제출에 하한을 적용하지 않는다. `use_late_window`가 true이고 `late_window_end`가 null이면 같은 분반 다음 주차의 `submission_window_start` 1초 전으로 계산한다. 다음 주차가 없으면 명시적 값이 필요하다. `use_late_window`가 false이면 effective deadline과 Events settle delay만으로 제출 여부를 확정한다.
 
-Week 1은 두 분반 모두 2026-09-03 23:59:59 KST를 cutoff로 사용하며 제출 시작 경계와 branch 이름을 강제하지 않는다. PushEvent가 있으면 `created_at`과 `payload.head`를 우선 사용한다. 적격 PushEvent가 없으면 저장소 commit history에서 `commit.committer.date`가 cutoff 이하인 commit을 최신순으로 검사하고 root README가 존재하는 SHA를 사용한다. committer date는 PushEvent보다 약한 Git metadata지만 Week 1 rubric이 명시적으로 허용한 fallback이다. root README와 조교 collaborator ACTIVE가 확인되면 1.0이다. 교수 collaborator와 README 학번·이름 내용은 조건이 아니며 0.5를 사용하지 않는다. 증거 이력이 불충분하면 0점 대신 null로 둔다.
-
-접근 가능한 저장소의 commit endpoint가 정상적으로 빈 목록을 반환하거나 GitHub가 저장소가 비어 있음을 명시하면 `EMPTY_REPOSITORY / NOT_SUBMITTED`의 신뢰 가능한 0.0으로 판정한다. commit이 존재하지만 `commit.committer.date`가 모두 cutoff 이후이면 `NO_TIMELY_SUBMISSION / LATE` 0.0으로 구분한다. 실제 API·인증·권한·network 오류는 계속 null이며 빈 저장소로 간주하지 않는다.
+Week 1의 실제 채점 기준과 증거 판정 절차는 [Week 1 사용 가이드](WEEK1_USAGE.md)를 참고한다.
 
 ## 7. VS Code에서 실행하기
 
@@ -94,6 +92,8 @@ VS Code에서 저장소를 열고 `Terminal` → `Run Task`를 선택한다. 다
 
 ## 8. 실제 채점 전 Preflight
 
+다음은 Week 1/Section 01을 사용한 명령 형식 예시다.
+
 ```powershell
 .\.venv\Scripts\python.exe main.py preflight --week 1 --section 01
 ```
@@ -108,7 +108,7 @@ Preflight는 private 파일의 존재·Git 비추적 상태, config와 roster �
 
 Dry Run은 실제와 같은 읽기 전용 GitHub 증거 확인과 점수 판정을 수행하지만 `records/`, `archive/`, `output/`에 파일을 만들지 않는다. 출력의 null, manual-review, error 수를 확인한 뒤 실제 채점을 결정한다.
 
-기본 출력은 `1.0`, `0.5`, `0.0`, `null`, null 원인, 제출 상태와 두 settle 시각의 aggregate만 보여 준다. 개인 식별 정보 없이 late window가 아직 확정 가능한 시점인지 판단할 수 있다. 특정 미해결 학생을 확인해야 할 때만 `--details`를 추가한다.
+기본 출력은 `1.0`, `0.5`, `0.0`, `null`, null 원인, 제출 상태, evidence source와 active rubric의 timing 진단을 aggregate로 보여 준다. Deadline-only rubric은 late window를 요구하지 않을 수 있고 bounded-window rubric은 start/end 경계를 사용할 수 있다. 특정 학생을 확인해야 할 때만 `--details`를 추가한다.
 
 ```powershell
 .\.venv\Scripts\python.exe main.py grade --week 1 --section 01 --dry-run --details
@@ -126,12 +126,14 @@ Dry Run은 실제와 같은 읽기 전용 GitHub 증거 확인과 점수 판정�
 
 ## 11. 점수 의미
 
-- `1.0`: 제출, collaborator, README 신원 조건을 신뢰성 있게 충족
-- `0.5`: 해당 주차 rubric이 `IDENTITY_PARTIAL`을 사용할 때 README 신원이 일부 불완전한 경우
+- `1.0`: 해당 주차 rubric이 정의한 만점 조건을 신뢰성 있게 충족
+- `0.5`: 해당 rubric이 partial score를 정의하고 그 조건을 만족
 - `0.0`: 증거가 충분한 학생 측 필수 조건 실패
 - blank/null: 등록 누락, API 불확실성, 불완전한 증거 또는 수동 검토 필요
 
 `0.0`은 확정된 점수이고 null은 아직 점수를 확정할 수 없다는 뜻이다. 둘을 절대 서로 바꾸지 않는다.
+
+Week 1의 구체적인 binary 점수 의미는 [Week 1 사용 가이드](WEEK1_USAGE.md)를 참고한다.
 
 ## 12. 확인 필요 상태
 
