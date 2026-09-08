@@ -6,6 +6,8 @@ from .models import (
     CollaboratorStatus,
     GradeDecision,
     GradingStatus,
+    GradingRules,
+    ScoringMode,
     ReadmeStatus,
     ScoreRules,
     SubmissionStatus,
@@ -18,6 +20,7 @@ def decide_grade(
     assistant_status: CollaboratorStatus,
     readme_status: ReadmeStatus,
     score_rules: ScoreRules,
+    grading: GradingRules | None = None,
 ) -> GradeDecision:
     """신뢰 가능한 실패만 0점으로 하고 기술적 불확실성은 null로 보존한다."""
 
@@ -38,17 +41,25 @@ def decide_grade(
     if submission_status in {SubmissionStatus.LATE, SubmissionStatus.NOT_SUBMITTED}:
         return GradeDecision(GradingStatus.FAIL, score_rules.fail)
 
-    if CollaboratorStatus.ERROR in {professor_status, assistant_status}:
+    grading = grading or GradingRules()
+    required_collaborators = []
+    if grading.professor_collaborator_required:
+        required_collaborators.append(professor_status)
+    if grading.assistant_collaborator_required:
+        required_collaborators.append(assistant_status)
+    if CollaboratorStatus.ERROR in required_collaborators:
         return GradeDecision(GradingStatus.ERROR, None, "collaborator check failed")
-    if CollaboratorStatus.UNKNOWN in {professor_status, assistant_status}:
+    if CollaboratorStatus.UNKNOWN in required_collaborators:
         return GradeDecision(
             GradingStatus.MANUAL_REVIEW,
             None,
             "collaborator status is unknown",
         )
-    if CollaboratorStatus.MISSING in {professor_status, assistant_status}:
+    if CollaboratorStatus.MISSING in required_collaborators:
         return GradeDecision(GradingStatus.FAIL, score_rules.fail)
 
+    if not grading.readme_required:
+        return GradeDecision(GradingStatus.PASS, score_rules.full)
     if readme_status is ReadmeStatus.MISSING:
         return GradeDecision(GradingStatus.FAIL, score_rules.fail)
     if readme_status is ReadmeStatus.ERROR:
@@ -61,4 +72,6 @@ def decide_grade(
         )
     if readme_status is ReadmeStatus.COMPLETE:
         return GradeDecision(GradingStatus.PASS, score_rules.full)
+    if grading.scoring_mode is ScoringMode.BINARY:
+        return GradeDecision(GradingStatus.FAIL, score_rules.fail)
     return GradeDecision(GradingStatus.PARTIAL, score_rules.partial)

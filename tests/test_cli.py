@@ -21,6 +21,12 @@ def test_force_early_grading_is_not_silently_ignored(monkeypatch) -> None:
         main(["grade", "--week", "1", "--section", "01", "--force-early-grading"])
 
 
+def test_grade_details_requires_dry_run(monkeypatch) -> None:
+    monkeypatch.setattr("main.load_global_config", lambda path: pytest.fail("must stop before I/O"))
+    with pytest.raises(SystemExit):
+        main(["grade", "--week", "1", "--section", "01", "--details"])
+
+
 def test_validate_config_uses_local_runtime_file(monkeypatch, tmp_path) -> None:
     calls = []
     monkeypatch.chdir(tmp_path)
@@ -42,7 +48,7 @@ def test_report_cli_never_initializes_github(monkeypatch, tmp_path) -> None:
 
     course = type("Course", (), {"sections": ("01",)})()
     monkeypatch.setattr("main.load_global_config", lambda path: course)
-    monkeypatch.setattr("main.load_students", lambda path: [])
+    monkeypatch.setattr("main.load_students", lambda path, **kwargs: [])
     monkeypatch.setattr("main.load_weekly_rubric", lambda path: type("Rubric", (), {"week": 1})())
     monkeypatch.setattr("main.RecordStore", Store)
     monkeypatch.setattr("main.ExcelReportWriter", Writer)

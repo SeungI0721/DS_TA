@@ -52,6 +52,7 @@ class SubmissionStatus(StrEnum):
     CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
     UNVERIFIABLE = "UNVERIFIABLE"
     ERROR = "ERROR"
+    MISSING_REPOSITORY_INFO = "MISSING_REPOSITORY_INFO"
 
 
 class GradingStatus(StrEnum):
@@ -60,6 +61,27 @@ class GradingStatus(StrEnum):
     FAIL = "FAIL"
     MANUAL_REVIEW = "MANUAL_REVIEW"
     ERROR = "ERROR"
+
+
+class ScoringMode(StrEnum):
+    BINARY = "BINARY"
+    IDENTITY_PARTIAL = "IDENTITY_PARTIAL"
+
+
+class SubmissionEvidenceType(StrEnum):
+    PUSH_EVENT = "PUSH_EVENT"
+    COMMIT_HISTORY = "COMMIT_HISTORY"
+
+
+class SubmissionEvidenceSource(StrEnum):
+    PUSH_EVENT_CONFIRMED = "PUSH_EVENT_CONFIRMED"
+    COMMIT_HISTORY_CONFIRMED = "COMMIT_HISTORY_CONFIRMED"
+    INSUFFICIENT_EVIDENCE = "INSUFFICIENT_EVIDENCE"
+
+
+class SubmissionTimestampType(StrEnum):
+    PUSH_EVENT_CREATED_AT = "PUSH_EVENT_CREATED_AT"
+    COMMIT_COMMITTER_DATE = "COMMIT_COMMITTER_DATE"
 
 
 class ReadmeStatus(StrEnum):
@@ -199,6 +221,18 @@ class GradingRules:
     readme_required: bool = True
     student_id_required: bool = True
     student_name_required: bool = True
+    scoring_mode: ScoringMode = ScoringMode.IDENTITY_PARTIAL
+    require_timely_push: bool = True
+    use_late_window: bool = True
+    enforce_submission_window_start: bool = True
+    enforce_submission_branch: bool = True
+    submission_evidence_sources: tuple[SubmissionEvidenceType, ...] = (
+        SubmissionEvidenceType.PUSH_EVENT,
+    )
+
+    def __post_init__(self) -> None:
+        if not self.submission_evidence_sources:
+            raise ValueError("submission_evidence_sources must not be empty")
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,18 +259,8 @@ class WeeklyRubric:
             raise ValueError("week, max_score, and sections must be valid")
         if not self.submission_branch or self.submission_branch.startswith("refs/"):
             raise ValueError("submission_branch must be a branch name or 'default'")
-        if not self.require_student_push_actor:
-            raise ValueError("student PushEvent actor matching is mandatory")
-        if not all(
-            (
-                self.grading.professor_collaborator_required,
-                self.grading.assistant_collaborator_required,
-                self.grading.readme_required,
-                self.grading.student_id_required,
-                self.grading.student_name_required,
-            )
-        ):
-            raise ValueError("Phase 4 mandatory grading requirements cannot be disabled")
+        if not self.require_student_push_actor or not self.grading.require_timely_push:
+            raise ValueError("student timely PushEvent actor matching is mandatory")
         if not 0 <= self.score_rules.fail <= self.score_rules.partial <= self.score_rules.full:
             raise ValueError("score rules must be ordered")
         if self.score_rules.full > self.max_score:
@@ -255,6 +279,26 @@ class PushRecord:
 
     def __post_init__(self) -> None:
         _require_aware(self.created_at, "created_at")
+
+
+@dataclass(frozen=True, slots=True)
+class CommitRecord:
+    sha: str
+    author_date: datetime | None
+    committer_date: datetime
+    branch: str
+
+    def __post_init__(self) -> None:
+        if self.author_date is not None:
+            _require_aware(self.author_date, "author_date")
+        _require_aware(self.committer_date, "committer_date")
+
+
+@dataclass(frozen=True, slots=True)
+class CommitHistoryResult:
+    commits: tuple[CommitRecord, ...]
+    coverage_complete: bool
+    notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +336,10 @@ class SubmissionDecision:
     selected_push: PushRecord | None = None
     evidence_complete: bool = True
     reason: str | None = None
+    evidence_source: SubmissionEvidenceSource = SubmissionEvidenceSource.INSUFFICIENT_EVIDENCE
+    selected_sha: str | None = None
+    selected_timestamp: datetime | None = None
+    timestamp_type: SubmissionTimestampType | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +424,10 @@ class GradeResult:
     event_coverage: EventCoverage | None = None
     selected_push: PushRecord | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
+    submission_evidence_source: SubmissionEvidenceSource = SubmissionEvidenceSource.INSUFFICIENT_EVIDENCE
+    selected_submission_sha: str | None = None
+    selected_submission_timestamp: datetime | None = None
+    selected_submission_timestamp_type: SubmissionTimestampType | None = None
 
     def __post_init__(self) -> None:
         required_timing = (

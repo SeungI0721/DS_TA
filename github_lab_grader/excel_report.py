@@ -77,11 +77,14 @@ def _criteria_sheet(workbook: Workbook, records: tuple[dict[str, Any], ...], rub
         ("실패 점수", rubric.score_rules.fail, "필수 제출 또는 collaborator 조건 불충족"),
         ("제출 시각 정책", "ON_TIME / EXTENDED_ON_TIME / LATE", "설정된 네 경계 시각 안의 PushEvent만 사용"),
         ("학생 Push actor 일치", str(rubric.require_student_push_actor), "제출 이벤트 actor와 학생 GitHub ID 일치"),
-        ("교수 Collaborator 필수", str(rubric.grading.professor_collaborator_required), "ACTIVE 상태 필요"),
-        ("조교 Collaborator 필수", str(rubric.grading.assistant_collaborator_required), "ACTIVE 상태 필요"),
+        ("교수 Collaborator 필수", str(rubric.grading.professor_collaborator_required), "rubric에서 true이면 ACTIVE 상태 필요"),
+        ("조교 Collaborator 필수", str(rubric.grading.assistant_collaborator_required), "rubric에서 true이면 ACTIVE 상태 필요"),
         ("README 필수", str(rubric.grading.readme_required), "선택된 제출 commit에서 확인"),
-        ("학번 일치 규칙", "정확한 전체 문자열", "README에서 공식 학번 확인"),
-        ("이름 일치 규칙", "Unicode NFC 정확 일치", "README에서 공식 이름 확인"),
+        ("학번 일치 필수", str(rubric.grading.student_id_required), "true이면 README에서 공식 학번 확인"),
+        ("이름 일치 필수", str(rubric.grading.student_name_required), "true이면 README에서 Unicode NFC 이름 확인"),
+        ("채점 방식", rubric.grading.scoring_mode.value, "BINARY 또는 IDENTITY_PARTIAL"),
+        ("late window 사용", str(rubric.grading.use_late_window), "false이면 effective deadline이 채점 cutoff"),
+        ("제출 시작 경계 적용", str(rubric.grading.enforce_submission_window_start), "false이면 deadline 이전 PushEvent에 하한을 적용하지 않음"),
         ("수동 검토/null 정책", "점수 셀 공란", "불확실성·오류를 0점으로 변환하지 않음"),
     ]
     for row in rows:
@@ -107,7 +110,7 @@ def _criteria_sheet(workbook: Workbook, records: tuple[dict[str, Any], ...], rub
 _WEEKLY_HEADERS = [
     "학번", "이름", "GitHub ID", "Repository", "점수", "배점", "채점 상태", "제출 상태",
     "교수 Collaborator", "조교 Collaborator", "README 상태", "학번 확인", "이름 확인",
-    "제출 시각", "제출 Commit SHA", "확인 필요 사유", "오류 코드", "Record Revision",
+    "제출 시각", "제출 Commit SHA", "제출 증거원", "확인 필요 사유", "오류 코드", "Record Revision",
 ]
 
 
@@ -119,12 +122,12 @@ def _weekly_section_sheet(workbook: Workbook, record: dict[str, Any]) -> None:
             safe_excel_text(student["student_id"]), safe_excel_text(student["student_name"]), safe_excel_text(student["github_id"]), safe_excel_text(student["repository"]),
             student["score"], student["max_score"], safe_excel_text(student["grading_status"]), safe_excel_text(student["submission_status"]),
             safe_excel_text(student["professor_collaborator_status"]), safe_excel_text(student["assistant_collaborator_status"]), safe_excel_text(student["readme_status"]),
-            safe_excel_text(student["student_id_match"]), safe_excel_text(student["student_name_match"]), safe_excel_text(student.get("submission_push_created_at")),
-            safe_excel_text(student.get("submission_push_head_sha")), safe_excel_text(student.get("manual_review_reason")), safe_excel_text(student.get("error_code")), record["record_revision"],
+            safe_excel_text(student["student_id_match"]), safe_excel_text(student["student_name_match"]), safe_excel_text(student.get("selected_submission_timestamp") or student.get("submission_push_created_at")),
+            safe_excel_text(student.get("selected_submission_sha") or student.get("submission_push_head_sha")), safe_excel_text(student.get("submission_evidence_source")), safe_excel_text(student.get("manual_review_reason")), safe_excel_text(student.get("error_code")), record["record_revision"],
         ])
     _style_sheet(sheet, 1, 1 + len(record["students"]), len(_WEEKLY_HEADERS))
     for row in range(2, 2 + len(record["students"])):
-        for column in (1, 3, 4, 15):
+        for column in (1, 3, 4, 15, 16):
             sheet.cell(row, column).number_format = "@"
         for column in (5, 6):
             sheet.cell(row, column).number_format = "0.0"

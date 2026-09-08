@@ -10,7 +10,7 @@ Data Structures 실습 과목의 GitHub 제출 증거를 수집하고 주차별 
 
 Version 1의 최종 범위는 다음 항목이다.
 
-- GitHub `PushEvent.created_at` 기반 제출 시각 확인
+- rubric에 따른 `PushEvent.created_at` 우선·commit history fallback 제출 증거 확인
 - 교수자와 조교의 현재 collaborator 상태 확인
 - 선택된 제출 SHA 시점의 루트 `README.md` 확인
 - README의 정확한 학번·이름 확인
@@ -126,6 +126,20 @@ DS-TA/
 
 ## 설치 및 실행 방법
 
+### 실제 사용 Quick Start
+
+실제 수업 운영 절차와 문제 해결 방법은 [DS-TA 사용 가이드](docs/USAGE.md)를 따른다. VS Code의 `Terminal` → `Run Task`에서 로컬 전용 `DS-TA: Preflight`, `DS-TA: Dry Run`, `DS-TA: REAL Grade Section/Week`, 보고서 및 테스트 Task를 실행할 수 있다.
+
+```text
+Preflight → Dry Run → 실제 채점 → canonical JSON → 주간/최종 Excel
+```
+
+실제 채점 전에는 반드시 `preflight` 결과의 `BLOCKER`가 없는지 확인한다. `.vscode/` 설정과 실제 수업 데이터는 Git에 포함하지 않는다.
+
+`grade --dry-run`은 점수별 집계, null 원인, 제출 상태와 마감 settle 상태를 출력한다. 필요한 경우에만 `--details`를 추가해 미해결 학생의 최소 식별자와 상태를 확인한다.
+
+채점 방식, 제출 시작 경계, 필수 collaborator, root README와 identity 요구, late-window 사용 여부는 주차별 rubric에서 결정한다. Deadline-only rubric은 시작 경계를 적용하지 않고, bounded-window rubric은 설정된 시작 시각 이후의 제출만 사용한다. Week 1의 binary 정책을 이후 주차의 보편 규칙으로 간주하지 않는다.
+
 명령은 저장소 루트에서 Windows PowerShell로 실행한다.
 
 ```powershell
@@ -184,7 +198,7 @@ section,student_id,name,github_id,repository
 
 ### `rubrics/weekNN.json`
 
-주차별 제목, 최대 점수, 제출 branch, PushEvent actor 조건, 분반별 마감, 채점 조건을 정의한다.
+주차별 제목, 최대 점수, 제출 branch 정책, PushEvent actor 조건, 분반별 마감, 채점 조건을 정의한다. `enforce_submission_branch`가 false이면 모든 정상 브랜치 ref(`refs/heads/...`)를 인정하되 tag ref는 제외하며, true이면 `submission_branch`로 지정한 브랜치만 인정한다.
 
 현재 `week01.json`의 날짜는 schema를 보여주기 위한 **문서용 예시**이며 실제 수업 일정이 아니다. 실제 채점 전 반드시 교체해야 한다. 시각은 다음과 같이 UTC offset을 포함한 ISO-8601 형식을 사용한다.
 
@@ -243,7 +257,7 @@ GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 
 1. section/week timing과 `late_window_end`를 해석한다.
 2. settle delay가 지나지 않았으면 API를 호출하지 않고 `EVIDENCE_NOT_SETTLED`로 반환한다.
 3. repository metadata와 Events API evidence를 읽는다.
-4. 학생 actor와 branch ref가 일치하는 최신 accepted PushEvent를 선택한다.
+4. 학생 actor와 rubric의 branch 정책이 일치하는 최신 accepted PushEvent를 선택한다.
 5. accepted submission이 없을 때만 late 또는 신뢰 가능한 `NOT_SUBMITTED`를 판정한다.
 6. 교수자와 조교 collaborator를 독립적으로 확인한다.
 7. 두 collaborator가 `ACTIVE`일 때만 selected head SHA의 root README를 조회한다.
@@ -255,19 +269,18 @@ GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 
 
 ## 제출 시각 판정
 
-과목 정책상 공식 제출 증거는 GitHub repository event의 `PushEvent.created_at`이다.
+제출 증거원은 주차별 rubric이 결정하며 `PushEvent.created_at`을 우선 사용한다.
 
-다음 시각은 공식 제출 시각으로 사용하지 않는다.
+다음 시각은 제출 시각으로 사용하지 않는다.
 
 - commit author date
-- commit committer date
 - 학생 PC 시각
 - 파일 수정 시각
 - 로컬 filesystem timestamp
 
-`PushEvent.created_at`은 이 과목이 채택한 최선의 REST 증거이지만 법적 또는 영구적인 수신 증명을 보장하는 값이라고 주장하지 않는다.
+`PushEvent.created_at`은 GitHub 측 push 시각이라는 점에서 더 강한 REST 증거다. `commit.committer.date`는 Git commit metadata이므로 보편적으로 push 시각과 동등하지 않다. 다만 Week 1은 PushEvent가 없는 정상 workflow도 허용하므로, rubric이 `COMMIT_HISTORY`를 허용할 때 deadline 이하 commit을 탐색하고 해당 SHA의 root README 존재를 fallback 증거로 인정한다. 현재 상태의 README만으로 과거 제출을 추정하지 않는다.
 
-학생 계정, 제출 branch, 해당 주차 범위가 일치하는 이벤트 중 `effective_deadline` 이하의 가장 늦은 PushEvent를 `selected_submission_push`로 선택한다. 같은 초에 서로 다른 head SHA가 충돌하면 순서를 추측하지 않고 manual review 대상으로 처리한다.
+학생 계정, rubric의 제출 branch 정책, 해당 주차 범위가 일치하는 이벤트 중 `effective_deadline` 이하의 가장 늦은 PushEvent를 `selected_submission_push`로 선택한다. Week 1처럼 branch 이름을 평가하지 않는 rubric은 모든 `refs/heads/...` PushEvent를 허용하지만 tag push는 제외한다. 같은 초에 서로 다른 head SHA가 충돌하면 순서를 추측하지 않고 manual review 대상으로 처리한다.
 
 README는 현재 branch가 아니라 반드시 다음 ref에서 조회한다.
 
@@ -343,7 +356,7 @@ canonical `1.0`, `0.5`, `0.0`은 Excel numeric cell로 유지한다. `null`, rec
 
 2026-09-07 Phase 6 점검 기준:
 
-- offline pytest 결과: 188 passed, 1 skipped, 0 failed
+- offline pytest 결과: 235 passed, 1 skipped, 0 failed
 - 개발자 소유 공개 repository 대상 read-only live pytest 결과: 1 passed, 125 deselected, 0 failed
 - pytest 기반 Phase 2/3 regression과 Phase 4 pure/orchestration test 실행
 - 인증, HTTP status, timeout, retry, pagination, PushEvent, collaborator, README-at-SHA를 fake HTTP response로 검증

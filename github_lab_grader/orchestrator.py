@@ -6,12 +6,12 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-from .collaborator_checker import collaborators_allow_readme_check
 from .grader import decide_grade
 from .github_client import GitHubApiError
 from .models import (
     CollaboratorCheckResult,
     CollaboratorStatus,
+    CommitHistoryResult,
     CourseConfig,
     GradeResult,
     GradingStatus,
@@ -23,7 +23,10 @@ from .models import (
     ResolvedSectionDeadline,
     Student,
     SubmissionDecision,
+    SubmissionEvidenceSource,
+    SubmissionEvidenceType,
     SubmissionStatus,
+    SubmissionTimestampType,
     WeeklyRubric,
 )
 from .readme_checker import check_readme_identity
@@ -38,6 +41,10 @@ class GitHubEvidenceClient(Protocol):
     def get_repository(self, repository: str) -> RepositoryMetadata: ...
 
     def list_repository_events(self, repository: str) -> RepositoryEventsResult: ...
+
+    def list_repository_commits(
+        self, repository: str, branch: str, deadline: datetime
+    ) -> CommitHistoryResult: ...
 
     def check_collaborator(
         self,
@@ -83,7 +90,7 @@ class GradingOrchestrator:
             timing = resolve_section_deadline(rubric, student.section, next_rubric)
         except ValueError as exc:
             return self._configuration_failure(student, rubric, graded_at, str(exc))
-        if timing.late_window_end is None:
+        if rubric.grading.use_late_window and timing.late_window_end is None:
             return self._result(
                 student,
                 rubric,
@@ -96,6 +103,21 @@ class GradingOrchestrator:
                 ),
                 decision_status=GradingStatus.MANUAL_REVIEW,
                 manual_reason="final week requires an explicit late_window_end",
+            )
+        if not student.github_id or not student.repository:
+            return self._result(
+                student,
+                rubric,
+                graded_at,
+                timing,
+                SubmissionDecision(
+                    SubmissionStatus.MISSING_REPOSITORY_INFO,
+                    evidence_complete=False,
+                    reason="GitHub submission information has not been registered",
+                ),
+                decision_status=GradingStatus.MANUAL_REVIEW,
+                manual_reason="GitHub submission information has not been registered",
+                error_code="MISSING_REPOSITORY_INFO",
             )
         settle_delay = timedelta(hours=self.course.github_event_settle_delay_hours)
         if graded_at < timing.effective_deadline + settle_delay:
@@ -113,6 +135,7 @@ class GradingOrchestrator:
                 manual_reason="GitHub Events settle delay has not elapsed",
             )
 
+        fallback_readme: ReadmeAtSha | None = None
         try:
             metadata = self.github.get_repository(student.repository)
             branch = resolve_submission_branch(rubric.submission_branch, metadata.default_branch)
@@ -129,10 +152,87 @@ class GradingOrchestrator:
             settle_delay=settle_delay,
             history_max_age=timedelta(days=self.course.github_event_history_max_age_days),
             require_actor=rubric.require_student_push_actor,
+            use_late_window=rubric.grading.use_late_window,
+            enforce_submission_window_start=rubric.grading.enforce_submission_window_start,
+            enforce_submission_branch=rubric.grading.enforce_submission_branch,
         )
+        if (
+            submission.selected_sha is None
+            and SubmissionEvidenceType.COMMIT_HISTORY
+            in rubric.grading.submission_evidence_sources
+            and submission.status not in {SubmissionStatus.AMBIGUOUS_SUBMISSION}
+        ):
+            try:
+                history = self.github.list_repository_commits(
+                    student.repository, branch, timing.effective_deadline
+                )
+                candidates = sorted(
+                    (
+                        commit
+                        for commit in history.commits
+                        if commit.committer_date <= timing.effective_deadline
+                        and (
+                            not rubric.grading.enforce_submission_window_start
+                            or commit.committer_date >= timing.submission_window_start
+                        )
+                    ),
+                    key=lambda commit: (commit.committer_date, commit.sha),
+                    reverse=True,
+                )
+                for commit in candidates:
+                    candidate_readme = self.github.get_readme_at_sha(
+                        student.repository, commit.sha
+                    )
+                    if candidate_readme.exists:
+                        fallback_readme = candidate_readme
+                        submission = SubmissionDecision(
+                            SubmissionStatus.ON_TIME,
+                            evidence_source=SubmissionEvidenceSource.COMMIT_HISTORY_CONFIRMED,
+                            selected_sha=commit.sha,
+                            selected_timestamp=commit.committer_date,
+                            timestamp_type=SubmissionTimestampType.COMMIT_COMMITTER_DATE,
+                        )
+                        break
+                else:
+                    if history.coverage_complete:
+                        if candidates:
+                            latest = candidates[0]
+                            fallback_readme = ReadmeAtSha(False, latest.sha)
+                            submission = SubmissionDecision(
+                                SubmissionStatus.ON_TIME,
+                                evidence_source=SubmissionEvidenceSource.COMMIT_HISTORY_CONFIRMED,
+                                selected_sha=latest.sha,
+                                selected_timestamp=latest.committer_date,
+                                timestamp_type=SubmissionTimestampType.COMMIT_COMMITTER_DATE,
+                            )
+                        else:
+                            after_deadline = tuple(
+                                commit
+                                for commit in history.commits
+                                if commit.committer_date > timing.effective_deadline
+                            )
+                            submission = SubmissionDecision(
+                                SubmissionStatus.LATE
+                                if after_deadline
+                                else SubmissionStatus.NOT_SUBMITTED,
+                                reason=(
+                                    "NO_TIMELY_SUBMISSION"
+                                    if after_deadline
+                                    else "EMPTY_REPOSITORY"
+                                ),
+                            )
+                    else:
+                        submission = SubmissionDecision(
+                            SubmissionStatus.UNVERIFIABLE,
+                            evidence_complete=False,
+                            reason="commit history is insufficient",
+                        )
+            except (GitHubApiError, ValueError) as exc:
+                return self._api_failure(student, rubric, graded_at, timing, exc)
         base_evidence = {
             "repository_id": metadata.repository_id,
             "submission_branch": branch,
+            "submission_branch_enforced": rubric.grading.enforce_submission_branch,
             "settle_delay_hours": self.course.github_event_settle_delay_hours,
             "history_max_age_days": self.course.github_event_history_max_age_days,
         }
@@ -146,6 +246,7 @@ class GradingOrchestrator:
                 CollaboratorStatus.UNKNOWN,
                 ReadmeStatus.NOT_CHECKED,
                 rubric.score_rules,
+                rubric.grading,
             )
             return self._result(
                 student,
@@ -162,44 +263,73 @@ class GradingOrchestrator:
             )
 
         push_permission = metadata.permissions.get("push") if metadata.permissions else None
+        professor: CollaboratorCheckResult | None = None
+        assistant: CollaboratorCheckResult | None = None
         try:
-            professor = self.github.check_collaborator(
-                student.repository,
-                self.course.professor_github,
-                repository_accessible=metadata.accessible,
-                caller_has_push=push_permission,
-            )
-            assistant = self.github.check_collaborator(
-                student.repository,
-                self.course.assistant_github,
-                repository_accessible=metadata.accessible,
-                caller_has_push=push_permission,
-            )
+            if rubric.grading.professor_collaborator_required:
+                professor = self.github.check_collaborator(
+                    student.repository,
+                    self.course.professor_github,
+                    repository_accessible=metadata.accessible,
+                    caller_has_push=push_permission,
+                )
+            if rubric.grading.assistant_collaborator_required:
+                assistant = self.github.check_collaborator(
+                    student.repository,
+                    self.course.assistant_github,
+                    repository_accessible=metadata.accessible,
+                    caller_has_push=push_permission,
+                )
         except (GitHubApiError, ValueError) as exc:
             return self._api_failure(
                 student, rubric, graded_at, timing, exc, submission=submission, metadata=metadata
             )
 
         readme_status = ReadmeStatus.NOT_CHECKED
-        readme: ReadmeAtSha | None = None
+        readme: ReadmeAtSha | None = fallback_readme
         student_id_found: bool | None = None
         student_name_found: bool | None = None
         error_code: str | None = None
-        if collaborators_allow_readme_check(professor.status, assistant.status):
+        required_collaborators = tuple(
+            result
+            for result, required in (
+                (professor, rubric.grading.professor_collaborator_required),
+                (assistant, rubric.grading.assistant_collaborator_required),
+            )
+            if required
+        )
+        if rubric.grading.readme_required and all(
+            result is not None and result.status is CollaboratorStatus.ACTIVE
+            for result in required_collaborators
+        ):
             try:
-                assert submission.selected_push is not None
-                readme = self.github.get_readme_at_sha(
-                    student.repository, submission.selected_push.head_sha
-                )
+                selected_sha = submission.selected_sha
+                assert selected_sha is not None
+                if readme is None:
+                    readme = self.github.get_readme_at_sha(student.repository, selected_sha)
                 if not readme.exists:
                     readme_status = ReadmeStatus.MISSING
                 elif readme.text is None:
                     readme_status = ReadmeStatus.UNVERIFIABLE
+                elif not (
+                    rubric.grading.student_id_required
+                    or rubric.grading.student_name_required
+                ):
+                    readme_status = ReadmeStatus.COMPLETE
                 else:
                     identity = check_readme_identity(readme.text, student)
-                    readme_status = identity.status
                     student_id_found = identity.student_id_found
                     student_name_found = identity.student_name_found
+                    required_identity_matches = (
+                        not rubric.grading.student_id_required or student_id_found
+                    ) and (
+                        not rubric.grading.student_name_required or student_name_found
+                    )
+                    readme_status = (
+                        ReadmeStatus.COMPLETE
+                        if required_identity_matches
+                        else ReadmeStatus.INCOMPLETE
+                    )
             except GitHubApiError as exc:
                 error_code = exc.code.value
                 readme_status = (
@@ -210,12 +340,16 @@ class GradingOrchestrator:
 
         decision = decide_grade(
             submission.status,
-            professor.status,
-            assistant.status,
+            professor.status if professor else CollaboratorStatus.UNKNOWN,
+            assistant.status if assistant else CollaboratorStatus.UNKNOWN,
             readme_status,
             rubric.score_rules,
+            rubric.grading,
         )
-        collaborator_error = professor.error_code or assistant.error_code
+        collaborator_error = (
+            (professor.error_code if professor else None)
+            or (assistant.error_code if assistant else None)
+        )
         return self._result(
             student,
             rubric,
@@ -236,8 +370,8 @@ class GradingOrchestrator:
             error_code=error_code or (collaborator_error.value if collaborator_error else None),
             evidence={
                 **base_evidence,
-                "professor_collaborator_note": professor.note,
-                "assistant_collaborator_note": assistant.note,
+                "professor_collaborator_note": professor.note if professor else None,
+                "assistant_collaborator_note": assistant.note if assistant else None,
             },
         )
 
@@ -389,4 +523,8 @@ class GradingOrchestrator:
             event_coverage=events.coverage if events else None,
             selected_push=push,
             evidence=dict(evidence or {}),
+            submission_evidence_source=submission.evidence_source,
+            selected_submission_sha=submission.selected_sha,
+            selected_submission_timestamp=submission.selected_timestamp,
+            selected_submission_timestamp_type=submission.timestamp_type,
         )

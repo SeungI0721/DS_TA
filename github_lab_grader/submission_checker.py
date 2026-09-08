@@ -13,7 +13,9 @@ from .models import (
     ResolvedSectionDeadline,
     Student,
     SubmissionDecision,
+    SubmissionEvidenceSource,
     SubmissionStatus,
+    SubmissionTimestampType,
     WeeklyRubric,
 )
 
@@ -66,18 +68,25 @@ def valid_student_pushes(
     timing: ResolvedSectionDeadline,
     *,
     require_actor: bool,
+    use_late_window: bool = True,
+    enforce_submission_window_start: bool = True,
+    enforce_submission_branch: bool = True,
 ) -> tuple[PushRecord, ...]:
     """actor, branch ref, 주차 범위를 모두 충족하는 push만 보존한다."""
 
-    if timing.late_window_end is None:
+    cutoff = timing.late_window_end if use_late_window else timing.effective_deadline
+    if cutoff is None:
         return ()
     expected_ref = f"refs/heads/{branch}"
     return tuple(
         push
         for push in pushes
         if (not require_actor or push.actor.casefold() == student.github_id.casefold())
-        and push.ref == expected_ref
-        and timing.submission_window_start <= push.created_at <= timing.late_window_end
+        and push.ref.startswith("refs/heads/")
+        and len(push.ref) > len("refs/heads/")
+        and (not enforce_submission_branch or push.ref == expected_ref)
+        and (not enforce_submission_window_start or timing.submission_window_start <= push.created_at)
+        and push.created_at <= cutoff
     )
 
 
@@ -85,11 +94,15 @@ def event_history_covers_window(
     coverage: EventCoverage,
     timing: ResolvedSectionDeadline,
     history_max_age: timedelta,
+    *,
+    enforce_submission_window_start: bool = True,
 ) -> bool:
     """Events 보존 한계 안에서 필요한 시작 시각까지 조회됐는지 보수적으로 판정한다."""
 
     if coverage.assignment_window_covered is not None:
         return coverage.assignment_window_covered
+    if not enforce_submission_window_start:
+        return not coverage.reached_documented_limit
     oldest = coverage.oldest_event_at
     if oldest is not None and oldest <= timing.submission_window_start:
         return True
@@ -108,12 +121,15 @@ def select_submission(
     settle_delay: timedelta,
     history_max_age: timedelta,
     require_actor: bool = True,
+    use_late_window: bool = True,
+    enforce_submission_window_start: bool = True,
+    enforce_submission_branch: bool = True,
 ) -> SubmissionDecision:
     """최신 accepted push를 선택하고 불충분한 부재 증거는 0점으로 바꾸지 않는다."""
 
     if graded_at.tzinfo is None or graded_at.utcoffset() is None:
         raise ValueError("graded_at must be timezone-aware")
-    if timing.late_window_end is None:
+    if use_late_window and timing.late_window_end is None:
         return SubmissionDecision(
             SubmissionStatus.CONFIGURATION_ERROR,
             evidence_complete=False,
@@ -132,6 +148,9 @@ def select_submission(
         branch,
         timing,
         require_actor=require_actor,
+        use_late_window=use_late_window,
+        enforce_submission_window_start=enforce_submission_window_start,
+        enforce_submission_branch=enforce_submission_branch,
     )
     if events.malformed_push_events:
         return SubmissionDecision(
@@ -158,7 +177,28 @@ def select_submission(
             if selected.created_at <= timing.scheduled_deadline
             else SubmissionStatus.EXTENDED_ON_TIME
         )
-        return SubmissionDecision(status, selected_push=selected)
+        return SubmissionDecision(
+            status,
+            selected_push=selected,
+            evidence_source=SubmissionEvidenceSource.PUSH_EVENT_CONFIRMED,
+            selected_sha=selected.head_sha,
+            selected_timestamp=selected.created_at,
+            timestamp_type=SubmissionTimestampType.PUSH_EVENT_CREATED_AT,
+        )
+
+    if not use_late_window:
+        if not event_history_covers_window(
+            events.coverage,
+            timing,
+            history_max_age,
+            enforce_submission_window_start=enforce_submission_window_start,
+        ):
+            return SubmissionDecision(
+                SubmissionStatus.UNVERIFIABLE,
+                evidence_complete=False,
+                reason="repository event history does not cover the assignment window",
+            )
+        return SubmissionDecision(SubmissionStatus.NOT_SUBMITTED)
 
     # Accepted push가 없을 때에는 late window 전체와 Events coverage가 모두 확정돼야
     # LATE 또는 NOT_SUBMITTED라는 징벌적 결론을 내릴 수 있다.
@@ -168,7 +208,12 @@ def select_submission(
             evidence_complete=False,
             reason="late submission window evidence has not settled",
         )
-    if not event_history_covers_window(events.coverage, timing, history_max_age):
+    if not event_history_covers_window(
+        events.coverage,
+        timing,
+        history_max_age,
+        enforce_submission_window_start=enforce_submission_window_start,
+    ):
         return SubmissionDecision(
             SubmissionStatus.UNVERIFIABLE,
             evidence_complete=False,
@@ -185,5 +230,12 @@ def select_submission(
                 reason="different late head SHAs share the latest PushEvent timestamp",
             )
         selected = min(latest, key=lambda push: push.event_id)
-        return SubmissionDecision(SubmissionStatus.LATE, selected_push=selected)
+        return SubmissionDecision(
+            SubmissionStatus.LATE,
+            selected_push=selected,
+            evidence_source=SubmissionEvidenceSource.PUSH_EVENT_CONFIRMED,
+            selected_sha=selected.head_sha,
+            selected_timestamp=selected.created_at,
+            timestamp_type=SubmissionTimestampType.PUSH_EVENT_CREATED_AT,
+        )
     return SubmissionDecision(SubmissionStatus.NOT_SUBMITTED)

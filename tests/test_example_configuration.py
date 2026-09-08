@@ -37,14 +37,18 @@ def test_weekly_example_uses_aware_ordered_iso_timestamps() -> None:
         start = datetime.fromisoformat(timing["submission_window_start"])
         scheduled = datetime.fromisoformat(timing["scheduled_deadline"])
         effective = datetime.fromisoformat(timing["effective_deadline"])
-        late_end = datetime.fromisoformat(timing["late_window_end"])
-        assert all(value.utcoffset() is not None for value in (start, scheduled, effective, late_end))
-        assert start <= scheduled <= effective < late_end
+        late_value = timing["late_window_end"]
+        late_end = datetime.fromisoformat(late_value) if late_value is not None else None
+        assert all(value.utcoffset() is not None for value in (start, scheduled, effective))
+        assert start <= scheduled <= effective
+        if rubric["grading"].get("use_late_window", True):
+            assert late_end is not None and late_end.utcoffset() is not None
+            assert effective < late_end
 
 
 def test_score_example_matches_weekly_maximum() -> None:
     rubric = _load_json("rubrics/week01.json")
-    assert rubric["score_rules"] == {"full": 1.0, "partial": 0.5, "fail": 0.0}
+    assert rubric["score_rules"] == {"full": 1.0, "partial": 0.0, "fail": 0.0}
     assert rubric["score_rules"]["full"] == rubric["max_score"]
 
 

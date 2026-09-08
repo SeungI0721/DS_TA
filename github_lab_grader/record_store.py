@@ -21,6 +21,8 @@ from .models import (
     LateWindowSource,
     ReadmeStatus,
     SubmissionStatus,
+    SubmissionEvidenceSource,
+    SubmissionTimestampType,
     WeeklyRubric,
 )
 
@@ -103,12 +105,16 @@ def _student(result: GradeResult) -> dict[str, Any]:
         "submission_push_created_at": _iso(result.submission_push_time, "submission_push_created_at") if result.submission_push_time else None,
         "submission_push_head_sha": result.submission_push_head_sha,
         "submission_ref": result.submission_push_ref,
+        "submission_evidence_source": result.submission_evidence_source.value,
+        "selected_submission_sha": result.selected_submission_sha,
+        "selected_submission_timestamp": _iso(result.selected_submission_timestamp, "selected_submission_timestamp") if result.selected_submission_timestamp else None,
+        "selected_submission_timestamp_type": result.selected_submission_timestamp_type.value if result.selected_submission_timestamp_type else None,
         "professor_collaborator_status": result.professor_collaborator.value,
         "assistant_collaborator_status": result.assistant_collaborator.value,
         "professor_collaborator_checked_at": _iso(result.professor_collaborator_checked_at, "professor_collaborator_checked_at") if result.professor_collaborator_checked_at else None,
         "assistant_collaborator_checked_at": _iso(result.assistant_collaborator_checked_at, "assistant_collaborator_checked_at") if result.assistant_collaborator_checked_at else None,
         "readme_status": result.readme_status.value, "readme_exists": result.readme_exists,
-        "readme_path": result.readme_path, "readme_lookup_sha": result.submission_push_head_sha,
+        "readme_path": result.readme_path, "readme_lookup_sha": result.selected_submission_sha,
         "student_id_match": result.student_id_found, "student_name_match": result.student_name_found,
         "manual_review_required": result.manual_review_required,
         "manual_review_reason": result.manual_review_reason, "error_code": result.error_code,
@@ -182,7 +188,7 @@ def build_canonical_record(course: CourseConfig, rubric: WeeklyRubric, section: 
             "deadline_note": resolved.deadline_note if resolved else timing.deadline_note,
             "submission_branch": rubric.submission_branch,
         },
-        "grading_policy": {"max_score": rubric.max_score, "score_rules": {"full": rubric.score_rules.full, "partial": rubric.score_rules.partial, "fail": rubric.score_rules.fail}, "require_student_push_actor": rubric.require_student_push_actor},
+        "grading_policy": {"max_score": rubric.max_score, "score_rules": {"full": rubric.score_rules.full, "partial": rubric.score_rules.partial, "fail": rubric.score_rules.fail}, "require_student_push_actor": rubric.require_student_push_actor, "scoring_mode": rubric.grading.scoring_mode.value, "require_timely_push": rubric.grading.require_timely_push, "require_root_readme": rubric.grading.readme_required, "required_collaborators": [role for role, required in (("professor", rubric.grading.professor_collaborator_required), ("assistant", rubric.grading.assistant_collaborator_required)) if required], "require_readme_identity": rubric.grading.student_id_required or rubric.grading.student_name_required, "use_late_window": rubric.grading.use_late_window, "enforce_submission_window_start": rubric.grading.enforce_submission_window_start, "enforce_submission_branch": rubric.grading.enforce_submission_branch, "submission_evidence_sources": [source.value for source in rubric.grading.submission_evidence_sources]},
         "summary": _summary(students), "students": students,
     }
     return validate_record(record)
@@ -203,6 +209,15 @@ def _validate_student(student: object, index: int) -> None:
     _time(student["graded_at"], f"students[{index}].graded_at")
     if student.get("submission_push_created_at") is not None:
         _time(student["submission_push_created_at"], f"students[{index}].submission_push_created_at")
+    if student.get("selected_submission_timestamp") is not None:
+        _time(student["selected_submission_timestamp"], f"students[{index}].selected_submission_timestamp")
+    if "submission_evidence_source" in student:
+        try:
+            SubmissionEvidenceSource(student["submission_evidence_source"])
+            if student.get("selected_submission_timestamp_type") is not None:
+                SubmissionTimestampType(student["selected_submission_timestamp_type"])
+        except (ValueError, TypeError) as exc:
+            raise CorruptedRecordError(f"student result {index} has invalid evidence provenance") from exc
     for field in ("professor_collaborator_checked_at", "assistant_collaborator_checked_at"):
         if student.get(field) is not None:
             _time(student[field], f"students[{index}].{field}")

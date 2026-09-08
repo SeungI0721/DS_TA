@@ -95,6 +95,52 @@ def push_event(event_id="1", created_at="2026-09-03T12:00:00Z"):
     }
 
 
+def commit_json(
+    sha: str = "c" * 40,
+    *,
+    author_date: str = "2026-09-02T00:00:00Z",
+    committer_date: str = "2026-09-03T00:00:00Z",
+):
+    return {
+        "sha": sha,
+        "commit": {
+            "author": {"date": author_date},
+            "committer": {"date": committer_date},
+            "message": "not retained",
+        },
+    }
+
+
+def test_commit_history_normalizes_distinct_dates_without_message() -> None:
+    api, session = client([make_response(data=[commit_json()])])
+    result = api.list_repository_commits(REPO, "main", NOW)
+    assert result.coverage_complete
+    assert result.commits[0].author_date != result.commits[0].committer_date
+    assert result.commits[0].sha == "c" * 40
+    assert session.calls[0]["params"]["sha"] == "main"
+    assert "until" not in session.calls[0]["params"]
+
+
+def test_empty_repository_409_is_normalized_as_complete_empty_history() -> None:
+    api, _session = client(
+        [make_response(409, {"message": "Git Repository is empty."})]
+    )
+    result = api.list_repository_commits(REPO, "main", NOW)
+    assert result.commits == ()
+    assert result.coverage_complete
+    assert "no commits" in result.notes[0]
+
+
+def test_commit_history_follows_link_pagination() -> None:
+    next_url = f"https://api.github.com/repos/{REPO}/commits?page=2"
+    first = make_response(data=[commit_json("a" * 40)], headers={"Link": f'<{next_url}>; rel="next"'})
+    second = make_response(data=[commit_json("b" * 40)])
+    api, session = client([first, second])
+    result = api.list_repository_commits(REPO, "main", NOW)
+    assert [item.sha for item in result.commits] == ["a" * 40, "b" * 40]
+    assert len(session.calls) == 2
+
+
 def test_successful_repository_metadata_retrieval() -> None:
     api, session = client([make_response(data=repository_json())])
     metadata = api.get_repository(REPO)

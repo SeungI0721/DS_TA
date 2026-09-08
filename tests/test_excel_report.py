@@ -102,7 +102,7 @@ def test_untrusted_weekly_fields_are_never_formulas(writer: ExcelReportWriter) -
     record = make_record(course, rubric, results=[make_result(malicious, score=None, reason="@SUM(A1:A2)")])
     workbook = load_workbook(writer.write_weekly_report([record], rubric), data_only=False)
     sheet = workbook["Section01"]
-    for coordinate in ("B2", "C2", "D2", "P2"):
+    for coordinate in ("B2", "C2", "D2", "Q2"):
         assert sheet[coordinate].data_type != "f" and str(sheet[coordinate].value).startswith("'")
     workbook.close()
 

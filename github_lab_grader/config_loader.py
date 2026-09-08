@@ -9,10 +9,13 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .models import (
     CourseConfig,
     GradingRules,
+    ScoringMode,
+    SubmissionEvidenceType,
     ScoreRules,
     SectionDeadline,
     Student,
@@ -32,8 +35,22 @@ _REPOSITORY_PATTERN = re.compile(
     r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]{1,100}$"
 )
 _GITHUB_ID_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+_SECTION_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 RUNTIME_CONFIG_FILENAME = "config.json"
 PRIVATE_STUDENTS_FILENAME = "students.csv"
+
+
+def _normalize_repository(value: str, row_number: int) -> str:
+    """GitHub 웹 URL 또는 owner/repository 값을 API용 식별자로 정규화한다."""
+    if not value:
+        return ""
+    if value.startswith(("https://", "http://")):
+        parsed = urlparse(value)
+        parts = parsed.path.strip("/").split("/")
+        if parsed.scheme != "https" or parsed.hostname != "github.com" or len(parts) != 2:
+            raise ConfigurationError(f"student CSV row {row_number} has an invalid GitHub repository URL")
+        value = f"{parts[0]}/{parts[1].removesuffix('.git')}"
+    return value
 
 
 def ensure_runtime_config_is_private(path: Path) -> None:
@@ -152,7 +169,12 @@ def load_global_config(path: Path, *, enforce_private_runtime: bool = True) -> C
         raise ConfigurationError(f"invalid global configuration: {exc}") from exc
 
 
-def load_students(path: Path, *, enforce_private_runtime: bool = True) -> list[Student]:
+def load_students(
+    path: Path,
+    *,
+    enforce_private_runtime: bool = True,
+    configured_sections: tuple[str, ...] | None = None,
+) -> list[Student]:
     """추적되지 않는 CSV에서 학생별 repository 설정을 검증해 읽는다."""
 
     if enforce_private_runtime:
@@ -169,14 +191,32 @@ def load_students(path: Path, *, enforce_private_runtime: bool = True) -> list[S
     if not required.issubset(rows[0]):
         raise ConfigurationError("student CSV is missing required columns")
     students: list[Student] = []
+    student_ids: set[str] = set()
+    logical_entries: set[tuple[str, str, str, str, str]] = set()
     for row_number, row in enumerate(rows, start=2):
         values = {key: (row.get(key) or "").strip() for key in required}
-        if any(not value for value in values.values()):
-            raise ConfigurationError(f"student CSV row {row_number} has an empty required value")
-        if not _GITHUB_ID_PATTERN.fullmatch(values["github_id"]):
+        values["repository"] = _normalize_repository(values["repository"], row_number)
+        if any(not values[key] for key in ("section", "student_id", "name")):
+            raise ConfigurationError(f"student CSV row {row_number} has an empty identity value")
+        if not _SECTION_PATTERN.fullmatch(values["section"]):
+            raise ConfigurationError(f"student CSV row {row_number} has an invalid section")
+        if configured_sections is not None and values["section"] not in configured_sections:
+            raise ConfigurationError(f"student CSV row {row_number} has an unconfigured section")
+        if values["github_id"] and not _GITHUB_ID_PATTERN.fullmatch(values["github_id"]):
             raise ConfigurationError(f"student CSV row {row_number} has an invalid github_id")
-        if not _REPOSITORY_PATTERN.fullmatch(values["repository"]):
+        if values["repository"] and not _REPOSITORY_PATTERN.fullmatch(values["repository"]):
             raise ConfigurationError(f"student CSV row {row_number} has an invalid repository")
+        if values["github_id"] and values["repository"]:
+            owner = values["repository"].split("/", 1)[0]
+            if owner.casefold() != values["github_id"].casefold():
+                raise ConfigurationError(f"student CSV row {row_number} has inconsistent github_id and repository owner")
+        logical = tuple(values[key] for key in ("section", "student_id", "name", "github_id", "repository"))
+        if values["student_id"] in student_ids:
+            raise ConfigurationError(f"student CSV row {row_number} has a duplicate student_id")
+        if logical in logical_entries:
+            raise ConfigurationError(f"student CSV row {row_number} duplicates a student entry")
+        student_ids.add(values["student_id"])
+        logical_entries.add(logical)
         students.append(Student(**values))
     return students
 
@@ -221,7 +261,20 @@ def load_weekly_rubric(path: Path) -> WeeklyRubric:
             submission_branch=_required_text(data, "submission_branch"),
             require_student_push_actor=bool(data.get("require_student_push_actor", True)),
             sections=sections,
-            grading=GradingRules(**grading_data),
+            grading=GradingRules(
+                **{
+                    **grading_data,
+                    "scoring_mode": ScoringMode(
+                        grading_data.get("scoring_mode", "IDENTITY_PARTIAL")
+                    ),
+                    "submission_evidence_sources": tuple(
+                        SubmissionEvidenceType(value)
+                        for value in grading_data.get(
+                            "submission_evidence_sources", ["PUSH_EVENT"]
+                        )
+                    ),
+                }
+            ),
             score_rules=ScoreRules(**{key: float(value) for key, value in scores_data.items()}),
         )
     except (KeyError, TypeError, ValueError) as exc:

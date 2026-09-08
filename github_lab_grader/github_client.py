@@ -19,6 +19,8 @@ from .auth import AuthCredential
 from .models import (
     CollaboratorCheckResult,
     CollaboratorStatus,
+    CommitHistoryResult,
+    CommitRecord,
     EventCoverage,
     GitHubErrorCode,
     PushRecord,
@@ -33,6 +35,7 @@ LOGGER = logging.getLogger(__name__)
 REPOSITORY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 TRANSIENT_STATUSES = frozenset({502, 503, 504})
 DOCUMENTED_EVENT_LIMIT = 300
+MAX_COMMIT_HISTORY_PAGES = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +238,81 @@ class GitHubClient:
             coverage=coverage,
             page_rate_limits=tuple(page_rate_limits),
         )
+
+    def list_repository_commits(
+        self, repository: str, branch: str, deadline: datetime
+    ) -> CommitHistoryResult:
+        """명시한 일반 브랜치의 commit history를 제한된 pagination으로 조회한다."""
+
+        repository = self._validate_repository(repository)
+        branch = self._validate_ref(branch)
+        if deadline.tzinfo is None or deadline.utcoffset() is None:
+            raise ValueError("deadline must be timezone-aware")
+        url: str | None = self._url(f"/repos/{repository}/commits")
+        params: Mapping[str, Any] | None = {
+            "sha": branch,
+            "per_page": 100,
+        }
+        commits: list[CommitRecord] = []
+        visited: set[str] = set()
+        pages = 0
+        while url is not None and pages < MAX_COMMIT_HISTORY_PAGES:
+            if url in visited:
+                raise GitHubApiError(GitHubErrorCode.INVALID_RESPONSE, "commit pagination cycle")
+            visited.add(url)
+            response = self._get_url(
+                url,
+                operation=f"commits {repository}",
+                params=params,
+                allowed_statuses=(200, 409),
+            )
+            params = None
+            pages += 1
+            if response.status_code == 409:
+                data = self._json_object(response, f"commits {repository}")
+                message = data.get("message")
+                if isinstance(message, str) and "git repository is empty" in message.casefold():
+                    return CommitHistoryResult((), True, ("repository has no commits",))
+                raise GitHubApiError(
+                    GitHubErrorCode.API_ERROR,
+                    f"commits {repository}",
+                    status_code=409,
+                    rate_limit=self.last_rate_limit,
+                )
+            page = self._json_list(response, f"commits {repository}")
+            for item in page:
+                if not isinstance(item, Mapping):
+                    raise GitHubApiError(GitHubErrorCode.INVALID_RESPONSE, f"commits {repository}")
+                commits.append(self.normalize_commit(item, branch))
+            url = self._next_link(response)
+        complete = url is None
+        return CommitHistoryResult(
+            tuple(commits),
+            complete,
+            () if complete else ("commit history pagination limit reached",),
+        )
+
+    @staticmethod
+    def normalize_commit(item: Mapping[str, Any], branch: str) -> CommitRecord:
+        """commit author/committer 날짜를 구분해 정규화한다."""
+
+        sha = item.get("sha")
+        commit = item.get("commit")
+        if not isinstance(sha, str) or not sha or not isinstance(commit, Mapping):
+            raise ValueError("commit SHA or metadata is missing")
+        author = commit.get("author")
+        committer = commit.get("committer")
+        if not isinstance(committer, Mapping):
+            raise ValueError("commit committer metadata is missing")
+        committer_date = GitHubClient._parse_optional_timestamp(committer.get("date"))
+        author_date = (
+            GitHubClient._parse_optional_timestamp(author.get("date"))
+            if isinstance(author, Mapping)
+            else None
+        )
+        if committer_date is None:
+            raise ValueError("commit committer date is missing")
+        return CommitRecord(sha, author_date, committer_date, branch)
 
     @staticmethod
     def normalize_push_event(event: Mapping[str, Any]) -> PushRecord:
