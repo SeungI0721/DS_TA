@@ -19,8 +19,14 @@ from github_lab_grader.grading_workflow import grade_and_persist
 from github_lab_grader.orchestrator import GradingOrchestrator
 from github_lab_grader.record_store import RecordStore, RecordStoreError
 from github_lab_grader.excel_report import ExcelReportWriter, ReportError
-from github_lab_grader.preflight import run_preflight
+from github_lab_grader.preflight import missing_operator_confirmations, run_preflight
 from github_lab_grader.dry_run_diagnostics import build_dry_run_diagnostics, format_dry_run_diagnostics
+from github_lab_grader.manual_grade_adjustments import (
+    ManualGradeAdjustmentError,
+    apply_adjustments_to_weekly_records,
+    apply_manual_grade_adjustments,
+    load_manual_grade_adjustments,
+)
 
 
 def _display_path(path: Path) -> str:
@@ -60,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild.set_defaults(all_sections=True)
     subparsers.add_parser("final-report", help="Create the all-sections workbook")
     subparsers.add_parser("validate-config", help="Validate configuration without grading")
+    subparsers.add_parser("validate-adjustments", help="Validate private manual grade adjustments")
     return parser
 
 
@@ -78,6 +85,19 @@ def main(argv: list[str] | None = None) -> int:
             for rubric_path in sorted(Path("rubrics").glob("week*.json")):
                 load_weekly_rubric(rubric_path)
             return 0
+        if args.command == "validate-adjustments":
+            course = load_global_config(Path("config.json"))
+            students = load_students(Path("data/students.csv"), configured_sections=course.sections)
+            rubrics = {
+                item.week: item
+                for item in (load_weekly_rubric(path) for path in sorted(Path("rubrics").glob("week*.json")))
+            }
+            RecordStore().private_file_preflight(Path("data/manual_grade_adjustments.csv"))
+            adjustments = load_manual_grade_adjustments(
+                Path("data/manual_grade_adjustments.csv"), course, students, rubrics
+            )
+            print(f"MANUAL_ADJUSTMENTS_VALID count={len(adjustments)}")
+            return 0
         if args.command in {"week-report", "rebuild-gradebook", "final-report"}:
             # 보고 명령은 canonical/local 입력만 읽으며 인증 provider나 GitHub client를 만들지 않는다.
             course = load_global_config(Path("config.json"))
@@ -91,6 +111,11 @@ def main(argv: list[str] | None = None) -> int:
             }
             store = RecordStore()
             writer = ExcelReportWriter()
+            adjustment_path = Path("data/manual_grade_adjustments.csv")
+            store.private_file_preflight(adjustment_path)
+            adjustments = load_manual_grade_adjustments(
+                adjustment_path, course, students, rubrics
+            )
             if args.command == "week-report":
                 sections = (args.section,) if args.section else course.sections
                 unknown = tuple(section for section in sections if section not in course.sections)
@@ -100,11 +125,15 @@ def main(argv: list[str] | None = None) -> int:
                 rubric = rubrics.get(args.week)
                 if rubric is None:
                     parser.error("weekly rubric is not configured")
-                path = writer.write_weekly_report(records, rubric)
+                path = writer.write_weekly_report(
+                    apply_adjustments_to_weekly_records(records, adjustments), rubric
+                )
                 print(f"WEEK_REPORT_CREATED week={args.week} path={_display_path(path)}")
                 return 0
             records = store.list_records()
-            gradebooks = build_all_section_gradebooks(course, records, rubrics, students)
+            gradebooks = apply_manual_grade_adjustments(
+                build_all_section_gradebooks(course, records, rubrics, students), adjustments
+            )
             if args.command == "rebuild-gradebook":
                 path = writer.write_final_report(gradebooks)
                 print(f"GRADEBOOK_REBUILT path={_display_path(path)}")
@@ -126,6 +155,11 @@ def main(argv: list[str] | None = None) -> int:
             course = load_global_config(Path("config.json"))
             students = load_students(Path("data/students.csv"), configured_sections=course.sections)
             rubric = load_weekly_rubric(Path("rubrics") / f"week{args.week:02d}.json")
+            if not args.dry_run and missing_operator_confirmations(course, rubric):
+                parser.error(
+                    "required private operator confirmations are incomplete; "
+                    "run preflight before production grading"
+                )
             next_path = Path("rubrics") / f"week{args.week + 1:02d}.json"
             next_rubric = load_weekly_rubric(next_path) if next_path.is_file() else None
             sections = course.sections if args.all_sections else (args.section,)
@@ -170,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
                     for line in format_dry_run_diagnostics(diagnostics, details=args.details):
                         print(line)
             return 0
-    except (ConfigurationError, RecordStoreError, ReportError, ValueError) as exc:
+    except (ConfigurationError, ManualGradeAdjustmentError, RecordStoreError, ReportError, ValueError) as exc:
         parser.error(str(exc))
     parser.error(f"{args.command!r} CLI record workflow is scheduled for a later phase")
     return 2

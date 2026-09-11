@@ -1,335 +1,148 @@
-# DS-TA Week 1 사용 가이드
+# DS-TA Week 1 채점 운영 가이드
 
-이 문서는 검증된 Week 1 채점 기준과 실제 운영 절차를 재현하기 위한 runbook이다. 설치와 전체 시스템의 공통 운영 방법은 [DS-TA 사용 가이드](USAGE.md)를 참고한다. 이후 주차는 다른 rubric을 사용할 수 있으므로 이 문서의 Week 1 규칙을 자동으로 일반화하지 않는다.
+이 문서는 Week 1의 실제 채점 기준과 증거 판정 절차만 설명한다. 설치, 인증, 공통 CLI, canonical record, 재채점 및 Excel 생성의 일반 절차는 [DS-TA 사용 가이드](USAGE.md)를 따른다.
 
-Week 1은 실제 수업 repository를 대상으로 authenticated read-only Dry Run과 표본 검증을 거쳐 canonical record 및 weekly Excel 생성까지 운영 검증을 완료했다. 이 문서는 실제 학생 식별정보나 점수 분포를 포함하지 않는다.
+## 1. 확정 채점 기준
 
-## 1. Week 1 개요
+Section 01과 Section 02에 같은 기준을 적용한다.
 
-Week 1 작업 흐름은 다음과 같다.
+- 공지 원문 기준 마감: `2026-09-03 23:59 KST`
+- 기계 비교 cutoff: `2026-09-03T23:59:59+09:00`
+- 최대 점수: `1.0`
+- 허용 점수: `1.0`, `0.0`
+- scoring mode: `BINARY`
 
-```text
-GitHub repository
-→ submission evidence
-→ Week 1 rubric
-→ GradeResult
-→ canonical JSON
-→ weekly Excel
-```
+초 단위가 없는 공지의 “23:59까지”를 결정적으로 비교하기 위해 해당 분의 끝을 cutoff로 정규화했다. `23:59:59`를 교수자가 직접 공지한 것으로 해석하지 않으며, `23:59:01`부터 `23:59:59`까지의 제출도 배제하지 않는다.
 
-canonical JSON은 authoritative grade record다. Excel은 canonical record에서 재생성하는 derived report이며 성적 원본이 아니다.
-
-## 2. Week 1 확정 채점 기준
-
-Section 01과 Section 02는 모두 다음 deadline을 사용한다.
+`1.0`은 다음 조건을 모두 신뢰성 있게 만족할 때만 부여한다.
 
 ```text
-2026-09-03T23:59:59+09:00
+professor collaborator가 현재 ACTIVE
+AND
+assistant collaborator가 현재 ACTIVE
+AND
+선택된 마감 전 SHA에 README.md 존재
+AND
+(
+    선택된 같은 SHA에 week01/README.md 존재
+    OR
+    선택된 같은 SHA에 week01-01/README.md 존재
+)
 ```
 
-최대 점수는 `1.0`, scoring mode는 `BINARY`이며 `0.5`는 없다.
+README의 학번, 이름, 문구, 길이, 품질 및 heading은 채점하지 않는다. 특정 branch 이름, submission start boundary, late window도 적용하지 않는다. 일반 branch ref(`refs/heads/...`)는 허용하지만 tag ref(`refs/tags/...`)는 제출 branch로 인정하지 않는다.
 
-`1.0`을 받으려면 다음 두 조건을 모두 만족해야 한다.
+## 2. 제출 증거와 historical snapshot
 
-- 허용된 증거로 deadline까지 repository root의 `README.md`가 존재했음이 확인된다.
-- 설정된 assistant/TA collaborator가 현재 `ACTIVE`다.
-
-`0.0`은 empty repository, deadline 이후 제출만 존재, 적격 historical snapshot의 root README 누락, assistant collaborator의 확실한 `MISSING`처럼 학생 측 실패가 신뢰성 있게 확인된 경우에만 사용한다.
-
-`null`은 `MISSING_REPOSITORY_INFO`, API/auth/permission 실패, 불충분한 history, 해결할 수 없는 SHA, collaborator `UNKNOWN/ERROR`처럼 점수를 확정할 수 없는 경우에 사용한다.
-
-Week 1은 professor collaborator, README 내부 학번·이름, 특정 branch 이름, submission start boundary, late window 완료, PushEvent 자체, `0.5` partial score를 요구하지 않는다.
-
-## 3. Week 1 제출 증거 정책
+Week 1은 현재 repository 상태로 과거 제출을 추정하지 않는다. 모든 필수 경로는 하나의 선택된 historical SHA에서 정확한 대소문자와 경로로 검사한다.
 
 ### PUSH_EVENT_CONFIRMED
 
-적격 PushEvent가 있으면 이 경로를 우선한다.
+조건에 맞는 PushEvent가 있으면 이를 우선한다.
 
-- actor가 학생 GitHub ID와 일치해야 한다.
-- ref는 `refs/heads/...` 형식의 branch ref여야 한다. `refs/tags/...`는 제외한다.
-- `created_at`이 deadline 이하여야 하며 lower boundary는 적용하지 않는다.
-- deadline 이전의 최신 적격 PushEvent를 선택한다.
-- `payload.head` commit SHA를 historical snapshot으로 사용한다.
-- 그 SHA의 repository root에서 `README.md`를 확인한다.
+- rubric이 요구하는 경우 actor가 학생 GitHub ID와 일치해야 한다.
+- ref는 일반 branch ref여야 한다.
+- `PushEvent.created_at <= normalized cutoff`여야 한다.
+- 가장 최신 적격 event의 `payload.head`를 selected SHA로 사용한다.
+- 필수 경로 그룹 전체를 그 SHA에서 검사한다.
 
 ### COMMIT_HISTORY_CONFIRMED
 
-적격 PushEvent가 없으면 Week 1 rubric이 허용한 commit-history fallback을 사용한다.
+PushEvent가 보이지 않는다는 이유만으로 미제출을 확정하지 않는다. Week 1 rubric은 commit-history fallback을 허용한다.
 
-- GitHub REST API가 반환한 commit history를 조회한다.
-- cutoff에는 `commit.committer.date`를 사용하고 `commit.author.date`는 사용하지 않는다.
-- deadline 이전 후보를 최신순으로 검사한다.
-- root `README.md`가 존재하는 가장 최신 후보의 정확한 SHA를 snapshot으로 사용한다.
-- commit pagination은 현재 최대 10페이지로 제한하며, 그 범위로 absence를 확정할 수 없으면 `UNVERIFIABLE/null`로 남긴다.
+- `commit.committer.date`를 cutoff와 비교한다. `commit.author.date`는 사용하지 않는다.
+- 마감 전 commit을 최신순으로 검사한다.
+- `README.md AND (week01/README.md OR week01-01/README.md)`를 모두 만족하는 가장 최신 commit SHA를 선택한다.
+- 더 최신 commit에서 필수 파일이 삭제되었을 수 있으므로 파일 존재를 단조 증가한다고 가정하지 않는다.
+- 조회 범위로 absence를 확정할 수 없으면 `UNVERIFIABLE/null`로 보수적으로 처리한다.
 
-`PushEvent.created_at`은 GitHub 측 push 시각이므로 더 강한 증거다. `commit.committer.date`는 더 약한 Git metadata이지만, 유효한 저장소에서 과거 PushEvent가 보이지 않을 수 있으므로 Week 1 정책이 fallback으로 명시적으로 허용한다.
+`PushEvent.created_at`은 GitHub 측 push 시각이라는 점에서 더 강한 증거다. `commit.committer.date`는 push 시각과 동일하지 않은 Git metadata이며, Week 1 정책이 명시적으로 허용한 fallback이다.
 
-### 기타 GitHub event
+## 3. 파일 경로 판정
 
-`CreateEvent`와 `MemberEvent`는 provenance를 보강할 수 있지만 단독으로 README 제출을 증명하지 않는다.
+Rubric의 각 `required_path_groups`는 필수이며, 한 그룹 안의 `ANY`는 후보 중 하나 이상이 존재하면 충족된다.
 
-## 4. Week 1에서 사용하지 않는 조건
+| 그룹 | 정확한 후보 경로 | 충족 조건 |
+| --- | --- | --- |
+| `repository_root_readme` | `README.md` | 존재 |
+| `week_project_readme` | `week01/README.md`, `week01-01/README.md` | 둘 중 하나 이상 존재 |
 
-| 항목 | Week 1 적용 여부 |
+`Week01/README.md`, `week1/README.md`, `week01/readme.md`, `docs/README.md` 등 rubric에 없는 경로는 자동 인정하지 않는다. 두 그룹은 반드시 같은 selected SHA에서 평가한다.
+
+## 4. Collaborator 판정
+
+Professor와 assistant 두 역할 모두 private `config.json`에 설정된 계정의 현재 상태를 검사한다.
+
+- 현재 `ACTIVE`: 해당 역할 충족
+- 신뢰 가능한 `MISSING`: `0.0`
+- `UNKNOWN`, API/permission 오류: `null`
+
+초대·수락 시각이 마감 전이었는지는 채점하지 않는다. 마감 후 collaborator가 추가되었더라도 채점 시점에 현재 `ACTIVE`이면 Week 1 collaborator 조건을 충족한다.
+
+Professor 계정 철자에는 실제 성적을 바꿀 수 있는 운영상 모호성이 있었다. 계정 값을 추측하거나 공개 문서에 기록하지 않는다. 운영자가 intended account를 확인한 뒤 private `config.json`의 `operator_confirmations`에 `professor_github_identity`를 추가해야 한다. 확인 전 preflight는 `OPERATOR_CONFIRMATION_REQUIRED` BLOCKER를 반환하며 실제 grade/regrade 명령도 중단된다.
+
+## 5. `0.0`과 `null`
+
+신뢰 가능한 학생 측 실패만 `0.0`이다.
+
+| 원인 | 결과 |
 | --- | --- |
-| 제출 deadline | O |
-| submission start boundary | X |
-| 특정 branch 이름 | X |
-| root `README.md` | O |
-| README 학번 | X |
-| README 이름 | X |
-| assistant collaborator | O |
-| professor collaborator | X |
-| PushEvent 필수 | X |
-| late window | X |
-| `0.5` | X |
+| accessible repository의 commit history가 실제로 비어 있음 | `EMPTY_REPOSITORY` 또는 `NOT_SUBMITTED`, `0.0` |
+| 허용 가능한 commit이 모두 cutoff 이후 | `LATE`, `0.0` |
+| selected SHA에 root README 없음 | `ROOT_README_MISSING`, `0.0` |
+| selected SHA에 project README 두 후보 모두 없음 | `PROJECT_README_MISSING`, `0.0` |
+| required professor 현재 `MISSING` | `PROFESSOR_COLLABORATOR_MISSING`, `0.0` |
+| required assistant 현재 `MISSING` | `ASSISTANT_COLLABORATOR_MISSING`, `0.0` |
 
-## 5. 실행 전 필요한 파일
+기술적·역사적 불확실성은 `null`이다. GitHub 등록정보 누락, 인증·권한·network·rate-limit·server 오류, 불완전한 history, 해석 불가능한 SHA, collaborator `UNKNOWN/ERROR`를 0점으로 바꾸지 않는다. Week 1에는 `0.5` 경로가 없다.
 
-- `config.json`: 실제 과목, 분반, GitHub 계정과 API 설정을 담는 private local 설정
-- `data/students.csv`: 실제 roster와 GitHub 등록정보를 담는 private local 파일
-- `rubrics/week01.json`: 공개 가능한 Week 1 채점 기준
+## 6. 운영 전 확인
 
-새 환경에서는 `config.example.json`과 `data/students.example.csv`를 복사해 private 파일을 준비한다. 공개 template에는 fictional 값만 유지한다.
-
-## 6. 학생 CSV 형식
-
-```csv
-section,student_id,name,github_id,repository
-01,EXAMPLE001,Example Student,example-student,example-student/example-repository
-```
-
-`repository`는 `owner/repository`로 해석될 수 있어야 한다. `github_id`와 `repository`를 모두 비워 두는 것은 허용되며, 이 경우 `MISSING_REPOSITORY_INFO`, `MANUAL_REVIEW`, `score = null`이 된다. 미등록을 `NOT_SUBMITTED/0.0`으로 바꾸거나 해당 학생 때문에 분반 전체를 중단하지 않는다.
-
-## 7. GitHub 인증 확인
-
-```powershell
-gh auth status
-```
-
-활성 계정이 있고 인증 token이 유효하다는 결과를 확인한다. 인증이 실패하면 다음 명령으로 로그인한 뒤 다시 확인한다.
-
-```powershell
-gh auth login
-```
-
-인증이 정상화되기 전에는 dry-run 결과를 신뢰하거나 실제 채점을 진행하지 않는다.
-
-## 8. VS Code에서 실행
-
-VS Code에서 `Terminal` → `Run Task...`를 선택하면 현재 로컬 설정에 다음 Task가 제공된다.
-
-- `DS-TA: Preflight`
-- `DS-TA: Dry Run`
-- `DS-TA: REAL Grade Section/Week`
-- `DS-TA: Regrade Section/Week`
-- `DS-TA: Week Report`
-- `DS-TA: Final Report`
-- `DS-TA: Run Tests`
-
-`.vscode/`는 현재 프로젝트 정책상 local-only이며 tracked Task가 있다고 가정해서는 안 된다.
-
-## 9. Preflight
+먼저 교수자 계정 identity를 실제 공지 또는 권한 있는 운영자에게 확인한다. 값 자체는 tracked 파일이나 출력에 남기지 않는다. 그 다음 두 분반에서 preflight를 실행한다.
 
 ```powershell
 .\.venv\Scripts\python.exe main.py preflight --week 1 --section 01
 .\.venv\Scripts\python.exe main.py preflight --week 1 --section 02
 ```
 
-성공 시 마지막에 `PREFLIGHT_READY`가 출력된다. Week 1에서는 다음 내용을 확인한다.
+`PREFLIGHT_READY` 전에 다음을 확인한다.
 
-- effective deadline: `2026-09-03T23:59:59+09:00`
-- submission start boundary: `NOT_ENFORCED`
-- submission branch policy: `ANY_BRANCH_REF`
-- late window: `LATE_WINDOW_NOT_REQUIRED`
-- accepted evidence sources: `PUSH_EVENT, COMMIT_HISTORY`
-- GitHub authentication: available
-- event settle 시각 경과
+- scoring mode: `BINARY`
+- 공지 기준: `2026-09-03 23:59 KST`
+- normalized cutoff: `2026-09-03T23:59:59+09:00`
+- submission start: `NOT_ENFORCED`
+- branch name: `NOT_ENFORCED`
+- late window: `NOT_REQUIRED`
+- collaborators: professor, assistant
+- paths: `README.md AND (week01/README.md OR week01-01/README.md)`
+- evidence: `PUSH_EVENT, COMMIT_HISTORY`
+- private operator confirmation: complete
 
-`BLOCKER`가 있으면 진행하지 않는다. `WARNING`은 검토가 필요하지만 학생 GitHub 미등록처럼 해당 학생을 null로 유지할 수 있는 상태다. `INFO`는 현재 설정과 정책의 확인 정보다.
+## 7. Read-only Dry Run
 
-## 10. Dry Run
-
-```powershell
-.\.venv\Scripts\python.exe main.py grade --week 1 --section 01 --dry-run
-.\.venv\Scripts\python.exe main.py grade --week 1 --section 02 --dry-run
-```
-
-Dry Run은 실제 read-only GitHub evidence acquisition과 점수 계산을 수행한다. canonical record, archive, production Excel을 만들지 않으며 GitHub repository를 수정하지 않는다.
-
-Aggregate 출력에서 `1.0`, `0.5`, `0.0`, `null`, 제출 상태, null 원인과 evidence-source count를 확인한다. Week 1의 `0.5`는 반드시 0이어야 한다.
-
-## 11. Dry Run 상세 확인
+오프라인 테스트가 통과하고 GitHub 인증이 유효한 경우에만 실행한다.
 
 ```powershell
 .\.venv\Scripts\python.exe main.py grade --week 1 --section 01 --dry-run --details
+.\.venv\Scripts\python.exe main.py grade --week 1 --section 02 --dry-run --details
 ```
 
-상세 출력은 다음 그룹을 분리한다.
+기본 `--dry-run`은 aggregate만 출력한다. `--details`는 student ID와 최소 판정 사유만 보여준다. 이름, repository URL, README 본문, token, raw GitHub response는 출력하지 않는다.
 
-- `Resolved 1.0 students`: student ID와 `PUSH_EVENT_CONFIRMED` 또는 `COMMIT_HISTORY_CONFIRMED`
-- `Resolved 0.0 students`: student ID와 `README_MISSING`, `NOT_SUBMITTED`, `LATE`, `ASSISTANT_COLLABORATOR_MISSING` 등의 이유
-- `Unresolved students`: student ID와 `MISSING_REPOSITORY_INFO`, `UNVERIFIABLE` 등의 이유
+새 rubric은 이전보다 professor collaborator와 project README 조건이 추가되었으므로 과거 점수 분포와 같을 필요가 없다. 새 `0.0` 가운데 collaborator missing, root/project README missing, late, empty repository 사례를 대표 표본으로 수동 확인한다.
 
-`INSUFFICIENT_EVIDENCE`는 신뢰할 수 있는 제출 snapshot을 확정하지 못했음을 뜻한다. 상세 출력에도 이름, repository URL, README 내용, raw API response 또는 token을 노출하지 않는다.
+## 8. Production regrade 승인 조건
 
-## 12. Dry Run 결과 검증 방법
+다음 항목을 모두 검증하기 전에는 production regrade를 실행하지 않는다.
 
-새 rubric을 처음 production에 사용할 때는 dry-run 결과를 표본 검증한다.
+- professor account spelling과 intended account 확인
+- 두 collaborator의 current-state 판정 확인
+- root/project README의 동일 historical SHA 검사 확인
+- `week01 OR week01-01` 판정 확인
+- identity·branch·start boundary가 숨은 조건으로 남지 않음
+- `0.5`가 불가능함
+- PushEvent 부재가 자동 0점이 아님
+- 전체 오프라인 테스트 통과
+- authenticated Dry Run과 새 0점 표본 검토 완료
 
-- 확정 `0.0` 사례 2–3개를 확인한다.
-- 확정 `1.0` 사례 1–2개를 확인한다.
-- 의심스러운 저장소는 exact API timestamp, commit history, historical README snapshot, collaborator 상태를 비교한다.
-
-GitHub UI의 `4 days ago`, `last week` 같은 상대 시각은 deadline 판정에 사용하지 않는다.
-
-## 13. 직접 GitHub 증거 확인하기
-
-다음 명령은 fictional placeholder를 사용하는 read-only 점검 예시다.
-
-전체 repository event:
-
-```powershell
-gh api repos/<owner>/<repo>/events --paginate --jq '.[] | [.type, .created_at, .actor.login, (.payload.ref // ""), (.payload.head // "")] | @tsv'
-```
-
-PushEvent만 확인:
-
-```powershell
-gh api repos/<owner>/<repo>/events --paginate --jq '.[] | select(.type=="PushEvent") | [.created_at, .actor.login, .payload.ref, .payload.head] | @tsv'
-```
-
-Commit history 확인:
-
-```powershell
-gh api repos/<owner>/<repo>/commits --paginate --jq '.[] | [.sha, .commit.author.date, .commit.committer.date, .commit.message] | @tsv'
-```
-
-`Z`로 끝나는 GitHub API timestamp는 UTC이며 KST는 UTC보다 9시간 빠르다. PushEvent가 있으면 `created_at`을 우선하고, fallback cutoff에는 `commit.committer.date`를 사용한다. `commit.author.date`는 Week 1 cutoff 증거가 아니다.
-
-## 14. 실제 채점
-
-다음 조건을 모두 확인한 뒤에만 실행한다.
-
-```text
-PREFLIGHT_READY
-+ dry-run 검토 완료
-+ known-valid 표본이 잘못 거절되지 않음
-```
-
-```powershell
-.\.venv\Scripts\python.exe main.py grade --week 1 --section 01
-.\.venv\Scripts\python.exe main.py grade --week 1 --section 02
-```
-
-이 명령은 canonical record를 생성한다.
-
-## 15. Canonical record
-
-예상 경로:
-
-```text
-records/section01/week01.json
-records/section02/week01.json
-```
-
-Canonical record에는 실제 성적과 증거가 포함되며 private/local source of truth다. Git에서 무시하고, 임의로 편집하지 않는다. 일반 grading은 기존 section/week record를 덮어쓰지 않는다. Numeric `0.0`과 unresolved `null`은 서로 다른 값으로 유지한다.
-
-## 16. 재채점
-
-```powershell
-.\.venv\Scripts\python.exe main.py grade --week 1 --section 01 --regrade --regrade-reason "<reason>"
-```
-
-Regrade는 기존 canonical record를 `archive/sectionXX/weekXX/...`에 보존하고 검증한 뒤 revision을 증가시켜 새 canonical을 설치한다. Excel을 다시 만들기 위한 용도로 regrade하지 않는다.
-
-## 17. Week 1 Excel 생성
-
-```powershell
-.\.venv\Scripts\python.exe main.py week-report --week 1
-```
-
-결과는 `output/excel/week01_results.xlsx`이며 `채점기준`, `Section01`, `Section02`, `요약` sheet를 포함한다. Canonical `1.0`과 `0.0`은 numeric cell이고 null은 blank다. 보고서 생성은 canonical record만 읽고 GitHub를 호출하지 않는다.
-
-## 18. Excel과 canonical record의 차이
-
-```text
-canonical JSON = authoritative record
-Excel = derived report
-```
-
-Excel을 삭제하면 canonical record에서 다시 생성한다. Excel을 수동 편집해도 canonical grade는 바뀌지 않는다. Excel에서 canonical record로 역방향 import하지 않는다.
-
-## 19. 자주 발생하는 상태
-
-| 상태 | 의미 | 점수 | 권장 조치 |
-| --- | --- | --- | --- |
-| `MISSING_REPOSITORY_INFO` | GitHub 등록정보 누락 | null | roster 등록정보 확인 |
-| `README_MISSING` | 적격 historical SHA의 root README 없음 | 0.0 | 선택 SHA와 root 경로 표본 확인 |
-| `NOT_SUBMITTED` | empty repository 등 신뢰 가능한 제출 부재 | 0.0 | commit endpoint와 저장소 초기화 여부 확인 |
-| `LATE` | commit 또는 제출 증거가 deadline 이후에만 존재 | 0.0 | exact API timestamp 확인 |
-| `PUSH_EVENT_CONFIRMED` | PushEvent가 선택 snapshot을 확정 | 해당 판정 | selected SHA 확인 |
-| `COMMIT_HISTORY_CONFIRMED` | commit-history fallback이 snapshot을 확정 | 해당 판정 | committer date와 SHA 확인 |
-| `INSUFFICIENT_EVIDENCE` | 증거가 부족해 snapshot을 확정하지 못함 | null | history/API 범위 확인 |
-| `API_ERROR` | 실제 GitHub API 처리 실패 | null | 인증, status, rate limit 확인 |
-| `MANUAL_REVIEW` | 자동 점수 확정 불가 | null | 기록된 reason 검토 |
-| `UNVERIFIABLE` | history 또는 SHA를 신뢰성 있게 검증할 수 없음 | null | API 응답과 coverage 확인 |
-
-## 20. Empty repository 처리
-
-접근 가능한 repository에 commit이 하나도 없으면 신뢰 가능한 non-submission으로 판정한다.
-
-```text
-empty repository → NOT_SUBMITTED / 0.0
-post-deadline commit only → LATE / 0.0
-actual API failure → ERROR / null
-```
-
-정상적인 빈 commit 목록은 API 실패가 아니다.
-
-## 21. README historical check
-
-현재 branch에 README가 있다는 사실만으로 deadline 이전 제출을 증명하지 않는다. Grader는 PushEvent의 `payload.head` 또는 commit-history fallback이 선택한 historical SHA에서 repository-root `README.md`를 확인한다.
-
-```text
-pre-deadline selected SHA에 root README 존재 → README 조건 충족
-README가 post-deadline commit에만 존재 → 1.0 대상 아님
-```
-
-Nested README는 root README를 대신하지 않는다.
-
-## 22. 개인정보와 Git
-
-다음 경로는 실제 계정, 학생 정보 또는 성적을 포함할 수 있으므로 commit하지 않는다.
-
-- `.env`
-- `config.json`
-- `data/students.csv`
-- `records/`
-- `archive/`
-- `output/`
-
-실제 운영 중 `git add .`과 `git add -A`를 피하고 공개 가능한 경로만 명시적으로 선택한다. `.gitignore`는 이미 tracked 상태인 파일을 자동으로 제거하지 않는다.
-
-## 23. 실제 운영 체크리스트
-
-- [ ] `gh auth status` 정상
-- [ ] `rubrics/week01.json`의 deadline과 정책 확인
-- [ ] `config.json`과 `data/students.csv`가 Git에 비추적 상태인지 확인
-- [ ] Section 01 Preflight 실행
-- [ ] Section 02 Preflight 실행
-- [ ] Section 01 Dry Run 실행
-- [ ] Section 02 Dry Run 실행
-- [ ] `0.5 = 0` 확인
-- [ ] null 원인 검토
-- [ ] `0.0`/`1.0` 표본 확인
-- [ ] 실제 Section 01 Grade 실행
-- [ ] 실제 Section 02 Grade 실행
-- [ ] canonical record 확인
-- [ ] `week01_results.xlsx` 생성
-- [ ] Excel 요약 검토
-
-## 24. Week 2 이후 사용 시 주의
-
-Week 1 규칙을 Week 2 이후에 그대로 복사하지 않는다. 이후 rubric은 submission start boundary, branch enforcement, professor collaborator, README identity, partial `0.5`, late window, 다른 evidence source 또는 다른 max score를 사용할 수 있다. 항상 해당 주차의 validated rubric을 source of truth로 사용한다.
+승인 후에만 기존 canonical record를 직접 덮어쓰지 않고 명시적 `--regrade` workflow로 archive한 뒤 새 revision을 만든다. 새 canonical revision이 성공한 후 `week-report --week 1`로 Excel을 재생성한다. 현재 작업에서는 이 명령들을 실행하지 않는다.

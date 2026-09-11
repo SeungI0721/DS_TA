@@ -26,6 +26,8 @@ from .models import (
     PushRecord,
     RateLimitInfo,
     ReadmeAtSha,
+    RepositoryPathAtSha,
+    RepositoryPathsAtSha,
     RepositoryEventsResult,
     RepositoryMetadata,
 )
@@ -417,6 +419,50 @@ class GitHubClient:
                 GitHubErrorCode.INVALID_RESPONSE, f"root contents {repository} at explicit ref"
             )
         return tuple(data), self.last_rate_limit
+
+    def get_paths_at_sha(
+        self, repository: str, sha: str, paths: Sequence[str]
+    ) -> RepositoryPathsAtSha:
+        """한 historical SHA의 exact case-sensitive repository path 존재 여부를 조회한다."""
+
+        repository = self._validate_repository(repository)
+        sha = self._validate_ref(sha)
+        requested = tuple(paths)
+        if not requested or len(set(requested)) != len(requested):
+            raise ValueError("unique repository paths are required")
+        try:
+            response = self._get(
+                f"/repos/{repository}/git/trees/{quote(sha, safe='')}",
+                operation=f"repository tree {repository} at selected SHA",
+                params={"recursive": "1"},
+            )
+        except GitHubApiError as exc:
+            if exc.code is GitHubErrorCode.NOT_FOUND:
+                raise GitHubApiError(
+                    GitHubErrorCode.UNRESOLVABLE_REF,
+                    f"repository tree {repository} at selected SHA",
+                    status_code=exc.status_code,
+                    rate_limit=exc.rate_limit,
+                ) from exc
+            raise
+        data = self._json_object(response, f"repository tree {repository} at selected SHA")
+        tree = data.get("tree")
+        if data.get("truncated") is True or not isinstance(tree, list):
+            raise GitHubApiError(
+                GitHubErrorCode.INVALID_RESPONSE,
+                f"repository tree {repository} at selected SHA",
+            )
+        available = {
+            item.get("path")
+            for item in tree
+            if isinstance(item, Mapping)
+            and item.get("type") == "blob"
+            and isinstance(item.get("path"), str)
+        }
+        return RepositoryPathsAtSha(
+            sha,
+            tuple(RepositoryPathAtSha(path, path in available) for path in requested),
+        )
 
     @staticmethod
     def find_root_readme(entries: Sequence[Mapping[str, Any]]) -> str | None:

@@ -8,7 +8,9 @@ DS-TA는 GitHub의 제출 증거를 확인해 학생별 점수를 판정하고, 
 GitHub evidence → grading → canonical JSON → Excel
 ```
 
-canonical JSON이 성적의 원본이며 Excel은 언제든 다시 만들 수 있는 파생 보고서다.
+canonical JSON은 자동 채점 결과의 원본이며, 승인된 private adjustment가 있으면 보고서는 effective grade를 재구성한다. Excel은 언제든 다시 만들 수 있는 파생 보고서다.
+
+자동 채점 결과는 canonical JSON에 보존한다. TA가 승인한 예외 점수는 private `data/manual_grade_adjustments.csv`에만 기록하며, 보고서에서는 canonical 점수와 adjustment를 결합한 effective grade를 사용한다. Excel을 직접 수정해도 다음 재생성에서 사라지므로 Excel을 점수 수정의 원본으로 사용하지 않는다.
 
 ## 2. 최초 환경 준비
 
@@ -32,7 +34,7 @@ Copy-Item config.example.json config.json
 Copy-Item data/students.example.csv data/students.csv
 ```
 
-`config.json`과 `data/students.csv`는 `.gitignore`로 보호되는 로컬 전용 파일이다. 공개 예시 파일에는 가상 값만 유지한다.
+`config.json`, `data/students.csv`, `data/manual_overrides.json`, `data/manual_grade_adjustments.csv`는 `.gitignore`로 보호되는 로컬 전용 파일이다. 공개 예시 파일에는 가상 값만 유지한다.
 
 ## 4. config.json 설정
 
@@ -72,7 +74,11 @@ section,student_id,name,github_id,repository
 - `late_window_end`: 지각 증거 인정 종료 시각
 - `deadline_note`: 연장 또는 운영 사유
 
-주차별 채점 조건은 rubric이 결정한다. `scoring_mode`, 필수 collaborator 역할, README identity 필요 여부, `enforce_submission_window_start`, `enforce_submission_branch`, `use_late_window`를 주차마다 다르게 지정할 수 있다. `enforce_submission_branch: false`이면 이름과 관계없이 정상 브랜치 PushEvent(`refs/heads/...`)를 인정하며 tag ref는 인정하지 않는다. true이면 `submission_branch`가 `default`일 때 저장소 기본 브랜치만, 명시적 이름일 때 해당 브랜치만 인정한다. 시작 경계를 사용하는 과제는 `submission_window_start <= PushEvent.created_at`을 적용하고, deadline-only 과제는 `enforce_submission_window_start: false`로 설정해 deadline 이전 제출에 하한을 적용하지 않는다. `use_late_window`가 true이고 `late_window_end`가 null이면 같은 분반 다음 주차의 `submission_window_start` 1초 전으로 계산한다. 다음 주차가 없으면 명시적 값이 필요하다. `use_late_window`가 false이면 effective deadline과 Events settle delay만으로 제출 여부를 확정한다.
+주차별 채점 조건은 rubric이 결정한다. `scoring_mode`, 필수 collaborator 역할, README identity 필요 여부, `required_path_groups`, `enforce_submission_window_start`, `enforce_submission_branch`, `use_late_window`를 주차마다 다르게 지정할 수 있다. `required_path_groups`의 각 그룹은 모두 필수이며, `match: ANY` 그룹은 나열된 정확한 repository 경로 중 하나 이상이 같은 selected SHA에 존재하면 충족된다. 기존 rubric의 `readme_required`는 root README 검사로 계속 호환된다.
+
+`enforce_submission_branch: false`이면 이름과 관계없이 정상 브랜치 PushEvent(`refs/heads/...`)를 인정하며 tag ref는 인정하지 않는다. true이면 `submission_branch`가 `default`일 때 저장소 기본 브랜치만, 명시적 이름일 때 해당 브랜치만 인정한다. 시작 경계를 사용하는 과제는 `submission_window_start <= PushEvent.created_at`을 적용하고, deadline-only 과제는 `enforce_submission_window_start: false`로 설정해 deadline 이전 제출에 하한을 적용하지 않는다. `use_late_window`가 true이고 `late_window_end`가 null이면 같은 분반 다음 주차의 `submission_window_start` 1초 전으로 계산한다. 다음 주차가 없으면 명시적 값이 필요하다. `use_late_window`가 false이면 effective deadline과 Events settle delay만으로 제출 여부를 확정한다.
+
+실제 성적에 영향을 주는 private account identity처럼 운영자 확인이 필요한 항목은 rubric의 `required_operator_confirmations`와 local `config.json`의 `operator_confirmations`로 gate할 수 있다. 값 자체는 공개 rubric이나 진단 출력에 기록하지 않는다.
 
 Week 1의 실제 채점 기준과 증거 판정 절차는 [Week 1 사용 가이드](WEEK1_USAGE.md)를 참고한다.
 
@@ -124,6 +130,25 @@ Dry Run은 실제와 같은 읽기 전용 GitHub 증거 확인과 점수 판정�
 
 성공하면 `records/section01/week01.json`과 같은 canonical record가 생성된다. 같은 section/week에 기존 기록이 있으면 명시적 regrade 없이 덮어쓰지 않는다.
 
+## 10.1 수동 점수 조정
+
+GitHub 증거를 다시 수집해야 하는 rubric/구현 수정에는 `--regrade`를 사용한다. 사람이 검토해 승인한 예외 점수에는 regrade 대신 private `data/manual_grade_adjustments.csv`를 사용한다.
+
+```csv
+section,week,student_id,score,reason
+01,1,EXAMPLE001,1.0,Previously verified submission retained after repository replacement
+```
+
+파일은 선택 사항이며 없으면 기존 보고 동작과 완전히 같다. 행은 `(section, week, student_id)`로 유일해야 하고, roster·rubric·점수 범위·scoring mode 및 non-empty reason을 검증한다. Week 1 `BINARY` rubric에는 `0.0` 또는 `1.0`만 허용한다.
+
+```powershell
+.\.venv\Scripts\python.exe main.py validate-adjustments
+.\.venv\Scripts\python.exe main.py week-report --week 1
+.\.venv\Scripts\python.exe main.py final-report
+```
+
+Weekly report는 자동점수, 수동조정, 최종점수, 점수출처, 수동조정사유를 분리해 표시한다. Final report는 effective weekly score를 사용하며, adjustment로 해소되지 않은 null은 최종 실습성적을 blank로 남긴다.
+
 ## 11. 점수 의미
 
 - `1.0`: 해당 주차 rubric이 정의한 만점 조건을 신뢰성 있게 충족
@@ -172,7 +197,7 @@ Week 1의 구체적인 binary 점수 의미는 [Week 1 사용 가이드](WEEK1_U
 
 ## 16. Canonical record와 Excel의 차이
 
-Canonical JSON은 감사와 재현을 위한 source of truth다. Excel은 검토·배포 편의를 위한 derived report다. 수정된 Excel 값을 canonical record로 읽어 들이지 않으며 보고서 생성 중 재채점하지 않는다.
+Canonical JSON은 감사와 재현을 위한 자동 채점 source of truth다. 승인된 private adjustment가 있으면 보고서는 이를 결합해 effective grade를 계산한다. Excel은 검토·배포 편의를 위한 derived report다. 수정된 Excel 값을 canonical record로 읽어 들이지 않으며 보고서 생성 중 재채점하지 않는다.
 
 ## 17. 자주 발생하는 문제
 

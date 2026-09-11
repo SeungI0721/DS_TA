@@ -3,8 +3,11 @@
 from github_lab_grader.grader import decide_grade
 from github_lab_grader.models import (
     CollaboratorStatus,
+    GradingRules,
     GradingStatus,
+    PathGroupMatch,
     ReadmeStatus,
+    RequiredPathGroup,
     ScoreRules,
     SubmissionStatus,
 )
@@ -80,3 +83,21 @@ def test_unavailable_readme_is_not_treated_as_missing() -> None:
     result = decide(readme=ReadmeStatus.UNVERIFIABLE)
     assert result.score is None
     assert result.grading_status is GradingStatus.MANUAL_REVIEW
+
+
+def test_required_path_groups_are_required_without_legacy_readme_flag() -> None:
+    grading = GradingRules(
+        readme_required=False,
+        required_path_groups=(
+            RequiredPathGroup("source", PathGroupMatch.ANY, ("src/main.c",)),
+        ),
+    )
+    result = decide_grade(
+        SubmissionStatus.ON_TIME,
+        CollaboratorStatus.ACTIVE,
+        CollaboratorStatus.ACTIVE,
+        ReadmeStatus.MISSING,
+        SCORES,
+        grading,
+    )
+    assert result.score == 0.0

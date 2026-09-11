@@ -58,7 +58,7 @@ def decide_grade(
     if CollaboratorStatus.MISSING in required_collaborators:
         return GradeDecision(GradingStatus.FAIL, score_rules.fail)
 
-    if not grading.readme_required:
+    if not grading.readme_required and not grading.required_path_groups:
         return GradeDecision(GradingStatus.PASS, score_rules.full)
     if readme_status is ReadmeStatus.MISSING:
         return GradeDecision(GradingStatus.FAIL, score_rules.fail)

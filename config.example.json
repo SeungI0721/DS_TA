@@ -11,6 +11,7 @@
   "github_api_version": "2026-03-10",
   "github_event_settle_delay_hours": 6,
   "github_event_history_max_age_days": 30,
+  "operator_confirmations": [],
   "github_request": {
     "connect_timeout_seconds": 5.0,
     "read_timeout_seconds": 20.0,

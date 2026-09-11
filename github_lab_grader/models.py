@@ -63,6 +63,15 @@ class GradingStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class GradeResolutionSource(StrEnum):
+    AUTOMATIC = "AUTOMATIC"
+    MANUAL_OVERRIDE = "MANUAL_OVERRIDE"
+
+
+class ManualOverrideAction(StrEnum):
+    PRESERVE_PREVIOUS_CANONICAL_RESULT = "PRESERVE_PREVIOUS_CANONICAL_RESULT"
+
+
 class ScoringMode(StrEnum):
     BINARY = "BINARY"
     IDENTITY_PARTIAL = "IDENTITY_PARTIAL"
@@ -82,6 +91,15 @@ class SubmissionEvidenceSource(StrEnum):
 class SubmissionTimestampType(StrEnum):
     PUSH_EVENT_CREATED_AT = "PUSH_EVENT_CREATED_AT"
     COMMIT_COMMITTER_DATE = "COMMIT_COMMITTER_DATE"
+
+
+class PathGroupMatch(StrEnum):
+    ANY = "ANY"
+
+
+class PathGroupStatus(StrEnum):
+    SATISFIED = "SATISFIED"
+    MISSING = "MISSING"
 
 
 class ReadmeStatus(StrEnum):
@@ -147,6 +165,7 @@ class CourseConfig:
     github_event_settle_delay_hours: float
     github_event_history_max_age_days: float
     github_request: dict[str, Any]
+    operator_confirmations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.semester or not self.course:
@@ -163,6 +182,10 @@ class CourseConfig:
             raise ValueError("github_event_settle_delay_hours must not be negative")
         if self.github_event_history_max_age_days <= 0:
             raise ValueError("github_event_history_max_age_days must be positive")
+        if any(not item for item in self.operator_confirmations) or len(
+            set(self.operator_confirmations)
+        ) != len(self.operator_confirmations):
+            raise ValueError("operator confirmations must be unique non-empty strings")
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +238,46 @@ class ResolvedSectionDeadline:
 
 
 @dataclass(frozen=True, slots=True)
+class RequiredPathGroup:
+    name: str
+    match: PathGroupMatch
+    paths: tuple[str, ...]
+    failure_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.paths or len(set(self.paths)) != len(self.paths):
+            raise ValueError("required path group name and unique paths are required")
+        for path in self.paths:
+            parts = path.split("/")
+            if not path or path.startswith("/") or "\\" in path or any(
+                part in {"", ".", ".."} for part in parts
+            ):
+                raise ValueError("required repository paths must be safe relative POSIX paths")
+
+
+@dataclass(frozen=True, slots=True)
+class RequiredPathGroupResult:
+    name: str
+    match: PathGroupMatch
+    paths: tuple[str, ...]
+    matched_path: str | None
+    status: PathGroupStatus
+    failure_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryPathAtSha:
+    path: str
+    exists: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryPathsAtSha:
+    ref: str
+    paths: tuple[RepositoryPathAtSha, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class GradingRules:
     professor_collaborator_required: bool = True
     assistant_collaborator_required: bool = True
@@ -229,10 +292,21 @@ class GradingRules:
     submission_evidence_sources: tuple[SubmissionEvidenceType, ...] = (
         SubmissionEvidenceType.PUSH_EVENT,
     )
+    required_path_groups: tuple[RequiredPathGroup, ...] = ()
+    required_operator_confirmations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.submission_evidence_sources:
             raise ValueError("submission_evidence_sources must not be empty")
+        names = tuple(group.name for group in self.required_path_groups)
+        if len(set(names)) != len(names):
+            raise ValueError("required path group names must be unique")
+        if any(not item for item in self.required_operator_confirmations) or len(
+            set(self.required_operator_confirmations)
+        ) != len(self.required_operator_confirmations):
+            raise ValueError(
+                "required operator confirmations must be unique non-empty strings"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,6 +502,17 @@ class GradeResult:
     selected_submission_sha: str | None = None
     selected_submission_timestamp: datetime | None = None
     selected_submission_timestamp_type: SubmissionTimestampType | None = None
+    required_path_checks: tuple[RequiredPathGroupResult, ...] = ()
+    required_path_failure_reason: str | None = None
+    grade_resolution_source: GradeResolutionSource = GradeResolutionSource.AUTOMATIC
+    manual_override_action: ManualOverrideAction | None = None
+    manual_override_reason: str | None = None
+    manual_override_source_revision: int | None = None
+    manual_override_source_run_id: str | None = None
+    automatic_score_before_override: float | None = None
+    automatic_grading_status_before_override: GradingStatus | None = None
+    automatic_submission_status_before_override: SubmissionStatus | None = None
+    automatic_reason_before_override: str | None = None
 
     def __post_init__(self) -> None:
         required_timing = (
@@ -456,3 +541,13 @@ class GradeResult:
             raise ValueError("manual-review results must not contain an automatic score")
         if self.score is not None and not 0 <= self.score <= self.max_score:
             raise ValueError("score must be within zero and max_score")
+        if self.grade_resolution_source is GradeResolutionSource.MANUAL_OVERRIDE:
+            if (
+                self.manual_override_action is None
+                or not self.manual_override_reason
+                or self.manual_override_source_revision is None
+                or not self.manual_override_source_run_id
+            ):
+                raise ValueError("manual override provenance is incomplete")
+        elif self.manual_override_action is not None:
+            raise ValueError("automatic result must not contain manual override action")

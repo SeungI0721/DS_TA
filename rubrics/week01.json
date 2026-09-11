@@ -11,18 +11,18 @@
       "scheduled_deadline": "2026-09-03T23:59:59+09:00",
       "effective_deadline": "2026-09-03T23:59:59+09:00",
       "late_window_end": null,
-      "deadline_note": "Week 1은 effective deadline까지의 timely PushEvent만 채점합니다."
+      "deadline_note": "공식 공지의 2026-09-03 23:59 KST를 해당 분의 끝 시각으로 정규화한 cutoff입니다."
     },
     "02": {
       "submission_window_start": "2026-09-03T00:00:00+09:00",
       "scheduled_deadline": "2026-09-03T23:59:59+09:00",
       "effective_deadline": "2026-09-03T23:59:59+09:00",
       "late_window_end": null,
-      "deadline_note": "Week 1은 effective deadline까지의 timely PushEvent만 채점합니다."
+      "deadline_note": "공식 공지의 2026-09-03 23:59 KST를 해당 분의 끝 시각으로 정규화한 cutoff입니다."
     }
   },
   "grading": {
-    "professor_collaborator_required": false,
+    "professor_collaborator_required": true,
     "assistant_collaborator_required": true,
     "readme_required": true,
     "student_id_required": false,
@@ -32,7 +32,22 @@
     "use_late_window": false,
     "enforce_submission_window_start": false,
     "enforce_submission_branch": false,
-    "submission_evidence_sources": ["PUSH_EVENT", "COMMIT_HISTORY"]
+    "submission_evidence_sources": ["PUSH_EVENT", "COMMIT_HISTORY"],
+    "required_operator_confirmations": ["professor_github_identity"],
+    "required_path_groups": [
+      {
+        "name": "repository_root_readme",
+        "match": "ANY",
+        "paths": ["README.md"],
+        "failure_reason": "ROOT_README_MISSING"
+      },
+      {
+        "name": "week_project_readme",
+        "match": "ANY",
+        "paths": ["week01/README.md", "week01-01/README.md"],
+        "failure_reason": "PROJECT_README_MISSING"
+      }
+    ]
   },
   "score_rules": {
     "full": 1.0,

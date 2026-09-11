@@ -108,9 +108,9 @@ def _criteria_sheet(workbook: Workbook, records: tuple[dict[str, Any], ...], rub
 
 
 _WEEKLY_HEADERS = [
-    "학번", "이름", "GitHub ID", "Repository", "점수", "배점", "채점 상태", "제출 상태",
+    "학번", "이름", "GitHub ID", "Repository", "자동점수", "수동조정", "최종점수", "점수출처", "수동조정사유", "배점", "채점 상태", "제출 상태",
     "교수 Collaborator", "조교 Collaborator", "README 상태", "학번 확인", "이름 확인",
-    "제출 시각", "제출 Commit SHA", "제출 증거원", "확인 필요 사유", "오류 코드", "Record Revision",
+    "제출 시각", "제출 Commit SHA", "제출 증거원", "Root README", "Project README", "Project README 경로", "Resolution Source", "Override Reason", "확인 필요 사유", "오류 코드", "Record Revision",
 ]
 
 
@@ -118,18 +118,23 @@ def _weekly_section_sheet(workbook: Workbook, record: dict[str, Any]) -> None:
     sheet = workbook.create_sheet(safe_sheet_name(f"Section{record['section']}"))
     sheet.append(_WEEKLY_HEADERS)
     for student in record["students"]:
+        checks = {
+            check["name"]: check for check in student.get("required_path_checks", [])
+        }
+        root = checks.get("repository_root_readme", {})
+        project = checks.get("week_project_readme", {})
         sheet.append([
             safe_excel_text(student["student_id"]), safe_excel_text(student["student_name"]), safe_excel_text(student["github_id"]), safe_excel_text(student["repository"]),
-            student["score"], student["max_score"], safe_excel_text(student["grading_status"]), safe_excel_text(student["submission_status"]),
+            student.get("automatic_score", student["score"]), student.get("manual_adjustment_score"), student.get("effective_score", student["score"]), safe_excel_text(student.get("effective_grade_source", "AUTOMATIC")), safe_excel_text(student.get("manual_adjustment_reason")), student["max_score"], safe_excel_text(student["grading_status"]), safe_excel_text(student["submission_status"]),
             safe_excel_text(student["professor_collaborator_status"]), safe_excel_text(student["assistant_collaborator_status"]), safe_excel_text(student["readme_status"]),
             safe_excel_text(student["student_id_match"]), safe_excel_text(student["student_name_match"]), safe_excel_text(student.get("selected_submission_timestamp") or student.get("submission_push_created_at")),
-            safe_excel_text(student.get("selected_submission_sha") or student.get("submission_push_head_sha")), safe_excel_text(student.get("submission_evidence_source")), safe_excel_text(student.get("manual_review_reason")), safe_excel_text(student.get("error_code")), record["record_revision"],
+            safe_excel_text(student.get("selected_submission_sha") or student.get("submission_push_head_sha")), safe_excel_text(student.get("submission_evidence_source")), safe_excel_text(root.get("status")), safe_excel_text(project.get("status")), safe_excel_text(project.get("matched_path")), safe_excel_text(student.get("grade_resolution_source", "AUTOMATIC")), safe_excel_text(student.get("manual_override_reason")), safe_excel_text(student.get("manual_review_reason")), safe_excel_text(student.get("error_code")), record["record_revision"],
         ])
     _style_sheet(sheet, 1, 1 + len(record["students"]), len(_WEEKLY_HEADERS))
     for row in range(2, 2 + len(record["students"])):
-        for column in (1, 3, 4, 15, 16):
+        for column in (1, 3, 4, 19, 20, 23):
             sheet.cell(row, column).number_format = "@"
-        for column in (5, 6):
+        for column in (5, 6, 7, 10):
             sheet.cell(row, column).number_format = "0.0"
 
 

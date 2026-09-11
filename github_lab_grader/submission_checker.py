@@ -9,6 +9,10 @@ from .models import (
     EventCoverage,
     LateWindowSource,
     PushRecord,
+    PathGroupStatus,
+    RepositoryPathsAtSha,
+    RequiredPathGroup,
+    RequiredPathGroupResult,
     RepositoryEventsResult,
     ResolvedSectionDeadline,
     Student,
@@ -18,6 +22,29 @@ from .models import (
     SubmissionTimestampType,
     WeeklyRubric,
 )
+
+
+def evaluate_required_path_groups(
+    groups: tuple[RequiredPathGroup, ...], evidence: RepositoryPathsAtSha
+) -> tuple[RequiredPathGroupResult, ...]:
+    """동일 SHA의 exact path evidence로 각 필수 ANY group을 판정한다."""
+
+    exists = {item.path for item in evidence.paths if item.exists}
+    return tuple(
+        RequiredPathGroupResult(
+            group.name,
+            group.match,
+            group.paths,
+            next((path for path in group.paths if path in exists), None),
+            (
+                PathGroupStatus.SATISFIED
+                if any(path in exists for path in group.paths)
+                else PathGroupStatus.MISSING
+            ),
+            group.failure_reason,
+        )
+        for group in groups
+    )
 
 
 def resolve_section_deadline(

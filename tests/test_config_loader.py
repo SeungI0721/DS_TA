@@ -99,7 +99,7 @@ def test_week1_public_rubric_matches_actual_binary_policy() -> None:
     assert rubric.sections["02"].effective_deadline == expected
     assert rubric.grading.scoring_mode.value == "BINARY"
     assert rubric.grading.assistant_collaborator_required
-    assert not rubric.grading.professor_collaborator_required
+    assert rubric.grading.professor_collaborator_required
     assert not rubric.grading.student_id_required and not rubric.grading.student_name_required
     assert not rubric.grading.use_late_window
     assert not rubric.grading.enforce_submission_window_start
@@ -109,6 +109,13 @@ def test_week1_public_rubric_matches_actual_binary_policy() -> None:
         "COMMIT_HISTORY",
     ]
     assert rubric.score_rules.partial == 0.0
+    assert [group.name for group in rubric.grading.required_path_groups] == [
+        "repository_root_readme",
+        "week_project_readme",
+    ]
+    assert rubric.grading.required_operator_confirmations == (
+        "professor_github_identity",
+    )
 
 
 def test_student_csv_rejects_malformed_repository(tmp_path: Path) -> None:

@@ -18,9 +18,13 @@ from github_lab_grader.models import (
     GitHubErrorCode,
     GradingRules,
     GradingStatus,
+    PathGroupMatch,
     PushRecord,
     ReadmeAtSha,
     ReadmeStatus,
+    RepositoryPathAtSha,
+    RepositoryPathsAtSha,
+    RequiredPathGroup,
     RepositoryEventsResult,
     RepositoryMetadata,
     ScoreRules,
@@ -96,7 +100,7 @@ def week1_rubric() -> WeeklyRubric:
             "02": SectionDeadline(EFFECTIVE, EFFECTIVE, EFFECTIVE, None),
         },
         GradingRules(
-            professor_collaborator_required=False,
+            professor_collaborator_required=True,
             assistant_collaborator_required=True,
             readme_required=True,
             student_id_required=False,
@@ -108,6 +112,20 @@ def week1_rubric() -> WeeklyRubric:
             submission_evidence_sources=(
                 SubmissionEvidenceType.PUSH_EVENT,
                 SubmissionEvidenceType.COMMIT_HISTORY,
+            ),
+            required_path_groups=(
+                RequiredPathGroup(
+                    "repository_root_readme",
+                    PathGroupMatch.ANY,
+                    ("README.md",),
+                    "ROOT_README_MISSING",
+                ),
+                RequiredPathGroup(
+                    "week_project_readme",
+                    PathGroupMatch.ANY,
+                    ("week01/README.md", "week01-01/README.md"),
+                    "PROJECT_README_MISSING",
+                ),
             ),
         ),
         ScoreRules(1.0, 0.0, 0.0),
@@ -172,6 +190,8 @@ class Scenario:
     commits: CommitHistoryResult = CommitHistoryResult((), True)
     readmes_by_sha: dict[str, str | None] | None = None
     commits_error: GitHubErrorCode | None = None
+    paths_by_sha: dict[str, set[str]] | None = None
+    paths_error: GitHubErrorCode | None = None
 
 
 class FakeGitHub:
@@ -235,6 +255,23 @@ class FakeGitHub:
             return ReadmeAtSha(False, sha)
         text = scenario.readme_text or ""
         return ReadmeAtSha(True, sha, "README.md", "c" * 40, text.encode(), text)
+
+    def get_paths_at_sha(
+        self, repository: str, sha: str, paths: tuple[str, ...]
+    ) -> RepositoryPathsAtSha:
+        self.calls.append(("paths", repository, sha))
+        scenario = self.scenarios[repository]
+        if scenario.paths_error:
+            raise GitHubApiError(scenario.paths_error, "paths")
+        existing = (
+            scenario.paths_by_sha.get(sha, set())
+            if scenario.paths_by_sha is not None
+            else (set() if scenario.readme_missing else set(paths))
+        )
+        return RepositoryPathsAtSha(
+            sha,
+            tuple(RepositoryPathAtSha(path, path in existing) for path in paths),
+        )
 
 
 def run(item: Student, scenario: Scenario, *, graded_at: datetime = GRADED):
@@ -301,7 +338,10 @@ def test_week1_readme_identity_is_irrelevant_and_never_partial() -> None:
     assert result.score == 1.0
     assert result.grading_status is GradingStatus.PASS
     assert result.readme_status is ReadmeStatus.COMPLETE
-    assert [call[2] for call in github.calls if call[0] == "collaborator"] == ["example-assistant"]
+    assert [call[2] for call in github.calls if call[0] == "collaborator"] == [
+        "example-professor",
+        "example-assistant",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -324,7 +364,7 @@ def test_week1_accepts_any_normal_branch_push(ref: str) -> None:
     assert result.submission_push_ref == ref
     assert result.submission_push_head_sha == selected_sha
     assert result.submission_evidence_source is SubmissionEvidenceSource.PUSH_EVENT_CONFIRMED
-    assert ("readme", item.repository, selected_sha) in github.calls
+    assert ("paths", item.repository, selected_sha) in github.calls
 
 
 def test_week1_tag_push_does_not_qualify() -> None:
@@ -351,7 +391,7 @@ def test_week1_commit_history_fallback_confirms_readme_without_push_event() -> N
     assert result.score == 1.0
     assert result.submission_evidence_source is SubmissionEvidenceSource.COMMIT_HISTORY_CONFIRMED
     assert result.selected_submission_sha == sha
-    assert ("readme", item.repository, sha) in github.calls
+    assert ("paths", item.repository, sha) in github.calls
 
 
 def test_week1_create_event_is_only_corroboration_for_commit_fallback() -> None:
@@ -441,7 +481,7 @@ def test_week1_complete_commit_history_without_readme_is_zero() -> None:
         Scenario(
             events(),
             commits=CommitHistoryResult((commit,), True),
-            readmes_by_sha={},
+            paths_by_sha={},
         ),
     )
     assert result.readme_status is ReadmeStatus.MISSING
@@ -488,6 +528,136 @@ def test_week1_commit_api_failure_is_error_null() -> None:
     assert result.grading_status is GradingStatus.ERROR
     assert result.score is None
     assert result.error_code == "API_ERROR"
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        {"README.md", "week01/README.md"},
+        {"README.md", "week01-01/README.md"},
+        {"README.md", "week01/README.md", "week01-01/README.md"},
+    ],
+)
+def test_week1_required_path_groups_accept_either_project_readme(
+    existing: set[str],
+) -> None:
+    item = student()
+    result, _ = run_week1(
+        item,
+        Scenario(events(event_for(item)), paths_by_sha={HEAD: existing}),
+    )
+    assert result.score == 1.0
+    assert all(check.status.value == "SATISFIED" for check in result.required_path_checks)
+
+
+def test_generic_path_groups_do_not_depend_on_legacy_readme_flag() -> None:
+    item = student()
+    github = FakeGitHub(
+        {
+            item.repository: Scenario(
+                events(event_for(item)),
+                paths_by_sha={HEAD: {"README.md", "week01/README.md"}},
+            )
+        }
+    )
+    configured = week1_rubric()
+    configured = replace(
+        configured,
+        grading=replace(configured.grading, readme_required=False),
+    )
+    result = GradingOrchestrator(github, course(), now=lambda: GRADED).grade_student(
+        item, configured
+    )
+    assert result.score == 1.0
+    assert ("paths", item.repository, HEAD) in github.calls
+
+
+@pytest.mark.parametrize(
+    ("existing", "reason"),
+    [
+        ({"README.md"}, "PROJECT_README_MISSING"),
+        ({"week01/README.md"}, "ROOT_README_MISSING"),
+        (set(), "ROOT_README_MISSING"),
+        ({"docs/README.md", "Week01/README.md"}, "ROOT_README_MISSING"),
+    ],
+)
+def test_week1_missing_required_path_group_is_reliable_zero(
+    existing: set[str], reason: str
+) -> None:
+    item = student()
+    result, _ = run_week1(
+        item,
+        Scenario(events(event_for(item)), paths_by_sha={HEAD: existing}),
+    )
+    assert result.score == 0.0
+    assert result.required_path_failure_reason == reason
+    assert result.manual_review_reason == reason
+
+
+def test_week1_push_uses_selected_historical_sha_not_current_state() -> None:
+    item = student()
+    result, github = run_week1(
+        item,
+        Scenario(
+            events(event_for(item, head=HEAD)),
+            paths_by_sha={HEAD: {"README.md"}},
+        ),
+    )
+    assert result.score == 0.0
+    assert result.required_path_failure_reason == "PROJECT_README_MISSING"
+    assert ("paths", item.repository, HEAD) in github.calls
+
+
+def test_week1_commit_fallback_selects_latest_snapshot_satisfying_all_groups() -> None:
+    item = student()
+    older = CommitRecord("c" * 40, None, EFFECTIVE - timedelta(days=2), "main")
+    satisfied = CommitRecord("d" * 40, None, EFFECTIVE - timedelta(days=1), "main")
+    newer_deleted = CommitRecord("e" * 40, None, EFFECTIVE, "main")
+    result, _ = run_week1(
+        item,
+        Scenario(
+            events(),
+            commits=CommitHistoryResult((newer_deleted, satisfied, older), True),
+            paths_by_sha={
+                older.sha: {"README.md", "week01-01/README.md"},
+                satisfied.sha: {"README.md", "week01/README.md"},
+                newer_deleted.sha: {"README.md"},
+            },
+        ),
+    )
+    assert result.score == 1.0
+    assert result.selected_submission_sha == satisfied.sha
+    assert result.submission_evidence_source is SubmissionEvidenceSource.COMMIT_HISTORY_CONFIRMED
+
+
+@pytest.mark.parametrize(
+    "predeadline_paths",
+    [
+        {"README.md"},
+        {"week01/README.md"},
+    ],
+)
+def test_week1_postdeadline_file_addition_does_not_retroactively_qualify(
+    predeadline_paths: set[str],
+) -> None:
+    item = student()
+    before = CommitRecord("c" * 40, None, EFFECTIVE, "before cutoff")
+    after = CommitRecord(
+        "d" * 40, None, EFFECTIVE + timedelta(seconds=1), "after cutoff"
+    )
+    result, _ = run_week1(
+        item,
+        Scenario(
+            events(),
+            commits=CommitHistoryResult((after, before), True),
+            paths_by_sha={
+                before.sha: predeadline_paths,
+                after.sha: {"README.md", "week01/README.md"},
+            },
+        ),
+    )
+    assert result.score == 0.0
+    assert result.selected_submission_sha == before.sha
 
 
 def test_week1_incomplete_commit_history_is_null_not_not_submitted() -> None:
@@ -549,18 +719,57 @@ def test_week1_selects_latest_predeadline_sha_and_ignores_postdeadline_push() ->
     late = PushRecord("event-3", item.github_id, EFFECTIVE + timedelta(seconds=1), "refs/heads/main", "e" * 40, "d" * 40)
     result, github = run_week1(item, Scenario(events(older, timely, late), readme_text="README"))
     assert result.submission_push_head_sha == "d" * 40
-    assert ("readme", item.repository, "d" * 40) in github.calls
+    assert ("paths", item.repository, "d" * 40) in github.calls
 
 
-def test_week1_assistant_required_but_professor_ignored() -> None:
+def test_week1_both_collaborators_are_required() -> None:
     item = student()
     missing_assistant = Scenario(events(event_for(item)), assistant=CollaboratorStatus.MISSING)
     result, _ = run_week1(item, missing_assistant)
     assert result.score == 0.0
     missing_professor = Scenario(events(event_for(item)), professor=CollaboratorStatus.MISSING, readme_text="README")
     result, github = run_week1(item, missing_professor)
+    assert result.score == 0.0
+    assert any(call[2] == "example-professor" for call in github.calls)
+
+
+def test_week1_both_missing_collaborators_are_reliable_zero() -> None:
+    item = student()
+    result, _ = run_week1(
+        item,
+        Scenario(
+            events(event_for(item)),
+            professor=CollaboratorStatus.MISSING,
+            assistant=CollaboratorStatus.MISSING,
+        ),
+    )
+    assert result.score == 0.0
+
+
+@pytest.mark.parametrize(
+    ("role", "status"),
+    [
+        ("professor", CollaboratorStatus.UNKNOWN),
+        ("assistant", CollaboratorStatus.ERROR),
+    ],
+)
+def test_week1_required_collaborator_uncertainty_is_null(
+    role: str, status: CollaboratorStatus
+) -> None:
+    item = student()
+    scenario = Scenario(events(event_for(item)))
+    setattr(scenario, role, status)
+    result, _ = run_week1(item, scenario)
+    assert result.score is None
+
+
+def test_week1_collaborators_are_current_state_only() -> None:
+    item = student()
+    result, _ = run_week1(item, Scenario(events(event_for(item))))
     assert result.score == 1.0
-    assert not any(call[2] == "example-professor" for call in github.calls)
+    # Collaborator evidence has no historical timestamp input by design.
+    assert result.professor_collaborator_checked_at == GRADED
+    assert result.assistant_collaborator_checked_at == GRADED
 
 
 def test_week1_no_timely_push_is_zero_after_effective_settle_without_late_wait() -> None:
@@ -577,7 +786,7 @@ def test_week1_no_timely_push_is_zero_after_effective_settle_without_late_wait()
 def test_week1_assistant_uncertainty_and_unresolvable_sha_remain_null() -> None:
     item = student()
     unknown, _ = run_week1(item, Scenario(events(event_for(item)), assistant=CollaboratorStatus.UNKNOWN))
-    unresolved, _ = run_week1(item, Scenario(events(event_for(item)), readme_error=GitHubErrorCode.UNRESOLVABLE_REF))
+    unresolved, _ = run_week1(item, Scenario(events(event_for(item)), paths_error=GitHubErrorCode.UNRESOLVABLE_REF))
     assert unknown.score is None and unknown.grading_status is GradingStatus.MANUAL_REVIEW
     assert unresolved.score is None and unresolved.readme_status is ReadmeStatus.UNVERIFIABLE
 

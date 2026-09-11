@@ -16,10 +16,13 @@ from .models import (
     GradeResult,
     GradingStatus,
     LateWindowSource,
+    PathGroupStatus,
     ReadmeAtSha,
     ReadmeStatus,
     RepositoryEventsResult,
     RepositoryMetadata,
+    RepositoryPathsAtSha,
+    RequiredPathGroupResult,
     ResolvedSectionDeadline,
     Student,
     SubmissionDecision,
@@ -31,6 +34,7 @@ from .models import (
 )
 from .readme_checker import check_readme_identity
 from .submission_checker import (
+    evaluate_required_path_groups,
     resolve_section_deadline,
     resolve_submission_branch,
     select_submission,
@@ -56,6 +60,10 @@ class GitHubEvidenceClient(Protocol):
     ) -> CollaboratorCheckResult: ...
 
     def get_readme_at_sha(self, repository: str, sha: str) -> ReadmeAtSha: ...
+
+    def get_paths_at_sha(
+        self, repository: str, sha: str, paths: tuple[str, ...]
+    ) -> RepositoryPathsAtSha: ...
 
 
 class GradingOrchestrator:
@@ -136,6 +144,11 @@ class GradingOrchestrator:
             )
 
         fallback_readme: ReadmeAtSha | None = None
+        path_checks: tuple[RequiredPathGroupResult, ...] = ()
+        path_groups = rubric.grading.required_path_groups
+        required_paths = tuple(
+            dict.fromkeys(path for group in path_groups for path in group.paths)
+        )
         try:
             metadata = self.github.get_repository(student.repository)
             branch = resolve_submission_branch(rubric.submission_branch, metadata.default_branch)
@@ -179,12 +192,31 @@ class GradingOrchestrator:
                     key=lambda commit: (commit.committer_date, commit.sha),
                     reverse=True,
                 )
+                latest_path_checks: tuple[RequiredPathGroupResult, ...] = ()
                 for commit in candidates:
-                    candidate_readme = self.github.get_readme_at_sha(
-                        student.repository, commit.sha
-                    )
-                    if candidate_readme.exists:
-                        fallback_readme = candidate_readme
+                    if path_groups:
+                        candidate_checks = evaluate_required_path_groups(
+                            path_groups,
+                            self.github.get_paths_at_sha(
+                                student.repository, commit.sha, required_paths
+                            ),
+                        )
+                        if commit is candidates[0]:
+                            latest_path_checks = candidate_checks
+                        satisfied = all(
+                            check.status is PathGroupStatus.SATISFIED
+                            for check in candidate_checks
+                        )
+                    else:
+                        candidate_readme = self.github.get_readme_at_sha(
+                            student.repository, commit.sha
+                        )
+                        satisfied = candidate_readme.exists
+                    if satisfied:
+                        if path_groups:
+                            path_checks = candidate_checks
+                        else:
+                            fallback_readme = candidate_readme
                         submission = SubmissionDecision(
                             SubmissionStatus.ON_TIME,
                             evidence_source=SubmissionEvidenceSource.COMMIT_HISTORY_CONFIRMED,
@@ -197,7 +229,10 @@ class GradingOrchestrator:
                     if history.coverage_complete:
                         if candidates:
                             latest = candidates[0]
-                            fallback_readme = ReadmeAtSha(False, latest.sha)
+                            if path_groups:
+                                path_checks = latest_path_checks
+                            else:
+                                fallback_readme = ReadmeAtSha(False, latest.sha)
                             submission = SubmissionDecision(
                                 SubmissionStatus.ON_TIME,
                                 evidence_source=SubmissionEvidenceSource.COMMIT_HISTORY_CONFIRMED,
@@ -298,38 +333,55 @@ class GradingOrchestrator:
             )
             if required
         )
-        if rubric.grading.readme_required and all(
+        if (rubric.grading.readme_required or path_groups) and all(
             result is not None and result.status is CollaboratorStatus.ACTIVE
             for result in required_collaborators
         ):
             try:
                 selected_sha = submission.selected_sha
                 assert selected_sha is not None
-                if readme is None:
-                    readme = self.github.get_readme_at_sha(student.repository, selected_sha)
-                if not readme.exists:
-                    readme_status = ReadmeStatus.MISSING
-                elif readme.text is None:
-                    readme_status = ReadmeStatus.UNVERIFIABLE
-                elif not (
-                    rubric.grading.student_id_required
-                    or rubric.grading.student_name_required
-                ):
-                    readme_status = ReadmeStatus.COMPLETE
-                else:
-                    identity = check_readme_identity(readme.text, student)
-                    student_id_found = identity.student_id_found
-                    student_name_found = identity.student_name_found
-                    required_identity_matches = (
-                        not rubric.grading.student_id_required or student_id_found
-                    ) and (
-                        not rubric.grading.student_name_required or student_name_found
-                    )
+                if path_groups:
+                    if not path_checks:
+                        path_checks = evaluate_required_path_groups(
+                            path_groups,
+                            self.github.get_paths_at_sha(
+                                student.repository, selected_sha, required_paths
+                            ),
+                        )
                     readme_status = (
                         ReadmeStatus.COMPLETE
-                        if required_identity_matches
-                        else ReadmeStatus.INCOMPLETE
+                        if all(
+                            check.status is PathGroupStatus.SATISFIED
+                            for check in path_checks
+                        )
+                        else ReadmeStatus.MISSING
                     )
+                else:
+                    if readme is None:
+                        readme = self.github.get_readme_at_sha(student.repository, selected_sha)
+                    if not readme.exists:
+                        readme_status = ReadmeStatus.MISSING
+                    elif readme.text is None:
+                        readme_status = ReadmeStatus.UNVERIFIABLE
+                    elif not (
+                        rubric.grading.student_id_required
+                        or rubric.grading.student_name_required
+                    ):
+                        readme_status = ReadmeStatus.COMPLETE
+                    else:
+                        identity = check_readme_identity(readme.text, student)
+                        student_id_found = identity.student_id_found
+                        student_name_found = identity.student_name_found
+                        required_identity_matches = (
+                            not rubric.grading.student_id_required or student_id_found
+                        ) and (
+                            not rubric.grading.student_name_required or student_name_found
+                        )
+                        readme_status = (
+                            ReadmeStatus.COMPLETE
+                            if required_identity_matches
+                            else ReadmeStatus.INCOMPLETE
+                        )
             except GitHubApiError as exc:
                 error_code = exc.code.value
                 readme_status = (
@@ -350,6 +402,14 @@ class GradingOrchestrator:
             (professor.error_code if professor else None)
             or (assistant.error_code if assistant else None)
         )
+        path_failure_reason = next(
+            (
+                check.failure_reason or f"{check.name.upper()}_MISSING"
+                for check in path_checks
+                if check.status is PathGroupStatus.MISSING
+            ),
+            None,
+        )
         return self._result(
             student,
             rubric,
@@ -366,13 +426,15 @@ class GradingOrchestrator:
             student_name_found=student_name_found,
             decision_status=decision.grading_status,
             score=decision.score,
-            manual_reason=decision.manual_review_reason,
+            manual_reason=path_failure_reason or decision.manual_review_reason,
             error_code=error_code or (collaborator_error.value if collaborator_error else None),
             evidence={
                 **base_evidence,
                 "professor_collaborator_note": professor.note if professor else None,
                 "assistant_collaborator_note": assistant.note if assistant else None,
             },
+            path_checks=path_checks,
+            path_failure_reason=path_failure_reason,
         )
 
     def grade_section_week(
@@ -471,6 +533,8 @@ class GradingOrchestrator:
         manual_reason: str | None = None,
         error_code: str | None = None,
         evidence: dict[str, object] | None = None,
+        path_checks: tuple[RequiredPathGroupResult, ...] = (),
+        path_failure_reason: str | None = None,
     ) -> GradeResult:
         push = submission.selected_push
         return GradeResult(
@@ -527,4 +591,6 @@ class GradingOrchestrator:
             selected_submission_sha=submission.selected_sha,
             selected_submission_timestamp=submission.selected_timestamp,
             selected_submission_timestamp_type=submission.timestamp_type,
+            required_path_checks=path_checks,
+            required_path_failure_reason=path_failure_reason,
         )

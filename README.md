@@ -12,10 +12,11 @@ Version 1의 최종 범위는 다음 항목이다.
 
 - rubric에 따른 `PushEvent.created_at` 우선·commit history fallback 제출 증거 확인
 - 교수자와 조교의 현재 collaborator 상태 확인
-- 선택된 제출 SHA 시점의 루트 `README.md` 확인
-- README의 정확한 학번·이름 확인
+- 선택된 제출 SHA 시점의 rubric 기반 필수 경로 그룹 확인
+- rubric이 요구하는 경우 README의 정확한 학번·이름 확인
 - 주차별 점수 계산과 불변 JSON 증거 보존
 - 분반별 주차 결과와 누적 Excel 성적표 생성
+- private manual adjustment 기반의 effective grade 보고
 
 C 소스 검사와 학생 프로그램 실행은 Version 1 범위가 아니다.
 
@@ -38,9 +39,9 @@ C 소스 검사와 학생 프로그램 실행은 Version 1 범위가 아니다.
 | 기술적 불확실성의 null/manual-review 보존 | 구현, unit test 검증 |
 | 불변 JSON 기록과 regrade archive | 구현, local unit/integration test 검증 |
 | Excel 보고서와 누적 성적표 | 구현, fictional XLSX reopen test 검증 |
-| Week 1 실제 수업 데이터 운영 검증 | 완료 |
+| Week 1 최종 rubric 구현 | offline 검증 완료, 운영 확인 대기 |
 
-`grade`는 GitHub evidence를 canonical record로 저장한다. `week-report`, `rebuild-gradebook`, `final-report`는 canonical/local 입력만 읽어 Excel을 만들며 GitHub를 다시 호출하지 않는다.
+`grade`는 GitHub evidence를 canonical record로 저장한다. `week-report`, `rebuild-gradebook`, `final-report`는 canonical/local 입력만 읽어 Excel을 만들며 GitHub를 다시 호출하지 않는다. Human-approved 예외 점수는 ignored `data/manual_grade_adjustments.csv`에서만 관리하며 canonical JSON을 수정하지 않는다.
 
 ## 전체 프로젝트 구조
 
@@ -105,10 +106,10 @@ DS-TA/
 | `config.json` | 실제 수업 계정을 둘 수 있는 ignored local runtime 설정 |
 | `github_lab_grader/c_checker.py` | 실행 기능이 없는 향후 C 채점 placeholder |
 | `data/students.example.csv` | 공개 가능한 가상 학생 데이터 형식 |
-| `rubrics/week01.json` | 실제 사용 전에 교체해야 하는 문서용 주차 설정 |
+| `rubrics/week01.json` | 검증 대상 Week 1 채점 정책 |
 | `tests/` | 현재 기반 검증과 이후 Phase 동작 명세 |
 
-`config.json`, `records/`, `output/`, `archive/`, `data/students.csv`는 실제 계정·개인정보·성적 자료를 포함할 수 있으므로 저장소에 추적하지 않는다.
+`config.json`, `records/`, `output/`, `archive/`, `data/students.csv`, `data/manual_grade_adjustments.csv`는 실제 계정·개인정보·성적 자료를 포함할 수 있으므로 저장소에 추적하지 않는다.
 
 ## 사용 기술
 
@@ -138,7 +139,7 @@ Preflight → Dry Run → 실제 채점 → canonical JSON → 주간/최종 Exc
 
 `grade --dry-run`은 점수별 집계, null 원인, 제출 상태와 마감 settle 상태를 출력한다. 필요한 경우에만 `--details`를 추가해 미해결 학생의 최소 식별자와 상태를 확인한다.
 
-채점 방식, 제출 시작 경계, 필수 collaborator, root README와 identity 요구, late-window 사용 여부는 주차별 rubric에서 결정한다. Deadline-only rubric은 시작 경계를 적용하지 않고, bounded-window rubric은 설정된 시작 시각 이후의 제출만 사용한다. Week 1의 binary 정책을 이후 주차의 보편 규칙으로 간주하지 않는다.
+채점 방식, 제출 시작 경계, 필수 collaborator, historical SHA의 필수 경로 그룹, README identity 요구, late-window 사용 여부는 주차별 rubric에서 결정한다. Deadline-only rubric은 시작 경계를 적용하지 않고, bounded-window rubric은 설정된 시작 시각 이후의 제출만 사용한다. Week 1의 구체적인 정책은 [Week 1 사용 가이드](docs/WEEK1_USAGE.md)에만 유지하며 이후 주차의 보편 규칙으로 간주하지 않는다.
 
 명령은 저장소 루트에서 Windows PowerShell로 실행한다.
 
@@ -200,10 +201,10 @@ section,student_id,name,github_id,repository
 
 주차별 제목, 최대 점수, 제출 branch 정책, PushEvent actor 조건, 분반별 마감, 채점 조건을 정의한다. `enforce_submission_branch`가 false이면 모든 정상 브랜치 ref(`refs/heads/...`)를 인정하되 tag ref는 제외하며, true이면 `submission_branch`로 지정한 브랜치만 인정한다.
 
-현재 `week01.json`의 날짜는 schema를 보여주기 위한 **문서용 예시**이며 실제 수업 일정이 아니다. 실제 채점 전 반드시 교체해야 한다. 시각은 다음과 같이 UTC offset을 포함한 ISO-8601 형식을 사용한다.
+Tracked rubric은 검증된 주차 정책이며 임의로 교체하지 않는다. 시각은 다음과 같이 UTC offset을 포함한 ISO-8601 형식을 사용한다. 실제 공지가 분 단위라면 rubric의 정확한 cutoff가 어떤 운영 정규화를 사용했는지 `deadline_note`에 남긴다.
 
 ```json
-"scheduled_deadline": "2026-09-02T23:59:59+09:00"
+"scheduled_deadline": "2026-09-03T23:59:59+09:00"
 ```
 
 naive timestamp는 허용하지 않는다.
@@ -232,6 +233,7 @@ GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 
 - 현재 collaborator 상태 조회
 - 명시적 ref의 repository root entry 조회
 - 같은 selected SHA를 사용한 root README 탐색과 UTF-8 content 조회
+- 같은 selected SHA의 정확한 repository path 여러 개를 한 번에 확인
 
 모든 HTTP 호출은 timeout을 사용한다. 502, 503, 504와 network/timeout 오류는 설정된 횟수 안에서 exponential backoff로 재시도한다. 401, 권한 오류로 확인된 403, 404, 409, 422는 재시도하지 않는다. 403/429 rate limit은 `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After`, GitHub 오류 message를 함께 판별한다. 공식 header에서 계산한 대기가 설정된 최대 시간 이내일 때만 제한적으로 재시도하며, 그 밖에는 `RATE_LIMITED` 오류와 metadata를 caller에 반환한다.
 
@@ -239,16 +241,16 @@ GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 
 
 ## 채점 기준
 
-아래 정책은 Phase 4 순수 decision 함수와 orchestration에서 구현되어 있다.
+점수 조건은 rubric-driven이다. 아래 표는 특정 주차의 고정 조건이 아니라 공통 결과 의미를 설명한다.
 
 | 결과 | 조건 | 점수 |
 | --- | --- | ---: |
-| PASS | 유효 제출, 두 collaborator ACTIVE, README 존재, 학번·이름 모두 정확 | 1.0 |
-| PARTIAL | 유효 제출, 두 collaborator ACTIVE, README 존재, 학번·이름 중 하나 이상 누락 | 0.5 |
-| FAIL | LATE, 신뢰 가능한 NOT_SUBMITTED, README 누락, collaborator 누락 | 0.0 |
+| PASS | 해당 rubric의 필수 조건을 모두 신뢰성 있게 충족 | rubric의 만점 |
+| PARTIAL | 해당 rubric이 partial scoring을 명시하고 그 조건을 충족 | rubric의 partial 점수 |
+| FAIL | rubric의 필수 학생 측 조건이 신뢰성 있게 거짓 | 0.0 |
 | MANUAL_REVIEW | API·권한·이력·증거 불확실성 | blank/null |
 
-학번과 이름이 모두 없더라도 나머지 필수 조건과 README가 충족되면 현재 정책상 0.5점이다. 기술적 불확실성을 0점으로 자동 변환하지 않는다.
+기술적 불확실성을 0점으로 자동 변환하지 않는다. Identity나 partial score는 이를 활성화한 rubric에만 적용한다.
 
 ## Phase 4 orchestration
 
@@ -259,9 +261,9 @@ GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 
 3. repository metadata와 Events API evidence를 읽는다.
 4. 학생 actor와 rubric의 branch 정책이 일치하는 최신 accepted PushEvent를 선택한다.
 5. accepted submission이 없을 때만 late 또는 신뢰 가능한 `NOT_SUBMITTED`를 판정한다.
-6. 교수자와 조교 collaborator를 독립적으로 확인한다.
-7. 두 collaborator가 `ACTIVE`일 때만 selected head SHA의 root README를 조회한다.
-8. NFC 정규화 뒤 정확한 학번·이름을 검사하고 순수 score decision을 수행한다.
+6. rubric이 요구하는 collaborator 역할을 독립적으로 확인한다.
+7. 필수 collaborator가 `ACTIVE`일 때 selected SHA의 필수 경로 그룹 또는 legacy root README를 조회한다.
+8. rubric이 요구하는 경우에만 README identity를 검사하고 순수 score decision을 수행한다.
 
 `grade_section_week()`는 section 학생을 순회하며 각 결과를 독립적으로 보존한다. 한 repository의 API 또는 parsing 오류가 나머지 학생 처리를 중단하지 않는다. `GradeResult`는 timing, selected PushEvent와 head SHA, collaborator 상태, README 경로·identity 결과, score, manual-review 이유와 coverage를 포함하지만 token이나 README 본문은 저장하지 않는다.
 
@@ -278,7 +280,7 @@ GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 
 - 파일 수정 시각
 - 로컬 filesystem timestamp
 
-`PushEvent.created_at`은 GitHub 측 push 시각이라는 점에서 더 강한 REST 증거다. `commit.committer.date`는 Git commit metadata이므로 보편적으로 push 시각과 동등하지 않다. 다만 Week 1은 PushEvent가 없는 정상 workflow도 허용하므로, rubric이 `COMMIT_HISTORY`를 허용할 때 deadline 이하 commit을 탐색하고 해당 SHA의 root README 존재를 fallback 증거로 인정한다. 현재 상태의 README만으로 과거 제출을 추정하지 않는다.
+`PushEvent.created_at`은 GitHub 측 push 시각이라는 점에서 더 강한 REST 증거다. `commit.committer.date`는 Git commit metadata이므로 보편적으로 push 시각과 동등하지 않다. Rubric이 `COMMIT_HISTORY`를 허용할 때만 deadline 이하 commit을 탐색하며, 설정된 필수 path group 전체를 같은 SHA에서 만족하는 최신 commit을 fallback 증거로 선택한다. Legacy rubric은 기존 root README 규칙을 유지한다. 현재 상태의 파일만으로 과거 제출을 추정하지 않는다.
 
 학생 계정, rubric의 제출 branch 정책, 해당 주차 범위가 일치하는 이벤트 중 `effective_deadline` 이하의 가장 늦은 PushEvent를 `selected_submission_push`로 선택한다. Week 1처럼 branch 이름을 평가하지 않는 rubric은 모든 `refs/heads/...` PushEvent를 허용하지만 tag push는 제외한다. 같은 초에 서로 다른 head SHA가 충돌하면 순서를 추측하지 않고 manual review 대상으로 처리한다.
 
@@ -342,7 +344,7 @@ python main.py final-report
 
 기본 `week-report`는 설정된 모든 분반을 하나의 `output/excel/weekXX_results.xlsx`에 담는다. `--section`은 필요한 경우 한 분반만 포함하는 선택 필터이며 별도 중복 파일을 만들지 않는다. 주간 workbook은 `채점기준`, 동적으로 생성되는 `SectionXX`, `요약` sheet로 구성되어 채점 기준·분반별 상세 결과·canonical 집계를 함께 보여 준다.
 
-`final-report`는 `output/excel/final_practical_grade.xlsx`를 만든다. 설정된 각 `SectionXX`와 `전체`, `주차별현황` sheet를 동적으로 생성하며 상세 GitHub 증거를 중복하지 않는다. canonical JSON이 유일한 성적 원본이고 Excel 파일은 언제든 재생성 가능한 파생 보고서다. `output/excel/`은 실제 성적 정보를 포함하므로 계속 Git에서 무시하며 추적하지 않는다.
+`final-report`는 `output/excel/final_practical_grade.xlsx`를 만든다. 설정된 각 `SectionXX`와 `전체`, `주차별현황` sheet를 동적으로 생성하며 상세 GitHub 증거를 중복하지 않는다. canonical JSON은 자동 채점 결과의 원본이고, 승인된 private `data/manual_grade_adjustments.csv`가 있으면 보고서는 이를 결합한 effective grade를 사용한다. Excel 파일은 언제든 재생성 가능한 파생 보고서다. `output/excel/`은 실제 성적 정보를 포함하므로 계속 Git에서 무시하며 추적하지 않는다.
 
 canonical `1.0`, `0.5`, `0.0`은 Excel numeric cell로 유지한다. `null`, record가 없는 주차와 미래 주차는 blank score로 유지하고 `MANUAL_REVIEW`, `ERROR`, `RECORD_MISSING`, `FUTURE_WEEK` 등의 text status로 구분한다. 실제 `0.0`만 해결된 0점이다.
 

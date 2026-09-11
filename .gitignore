@@ -31,6 +31,8 @@ config.json
 
 # 실제 학생 정보와 채점 결과
 data/students.csv
+data/manual_overrides.json
+data/manual_grade_adjustments.csv
 records/
 output/
 archive/

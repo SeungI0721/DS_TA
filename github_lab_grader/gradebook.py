@@ -46,6 +46,10 @@ class WeekGrade:
     record_revision: int | None
     submission_push_head_sha: str | None
     report_status: WeekReportStatus
+    automatic_score: float | None = None
+    adjustment_score: float | None = None
+    resolution_source: str = "AUTOMATIC"
+    adjustment_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +186,7 @@ def build_section_gradebook(
             if student is None:
                 maximum = rubrics[week].max_score if week in rubrics else None
                 status = _missing_status(section, week, rubrics, checked_at)
-                weeks.append(WeekGrade(week, None, maximum, status.value, None, None, None, status))
+                weeks.append(WeekGrade(week, None, maximum, status.value, None, None, None, status, None))
                 continue
             score = student["score"]
             grading_status = str(student["grading_status"])
@@ -196,6 +200,7 @@ def build_section_gradebook(
                 float(student["max_score"]), grading_status,
                 str(student["submission_status"]), relevant[week]["record_revision"],
                 student.get("submission_push_head_sha"), report_status,
+                float(score) if score is not None else None,
             ))
         earned = sum(item.score for item in weeks if item.score is not None)
         resolved_possible = sum(item.max_score or 0.0 for item in weeks if item.score is not None)

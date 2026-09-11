@@ -17,6 +17,7 @@ class DryRunDiagnostics:
     unresolved_students: tuple[tuple[str, str], ...]
     resolved_zero_students: tuple[tuple[str, str], ...]
     resolved_full_students: tuple[tuple[str, str], ...]
+    override_students: tuple[tuple[str, str, int | None, float | None], ...]
     evidence_sources: dict[str, int]
 
 
@@ -48,8 +49,13 @@ def _zero_reason(student: Mapping[str, Any], grading_policy: Mapping[str, Any]) 
     """확정 0점의 최소 운영 원인을 canonical status만으로 선택한다."""
 
     submission = str(student.get("submission_status") or "")
-    if submission in {"NOT_SUBMITTED", "LATE"}:
+    if submission == "NOT_SUBMITTED":
+        return str(student.get("manual_review_reason") or submission)
+    if submission == "LATE":
         return submission
+    path_reason = student.get("required_path_failure_reason")
+    if path_reason:
+        return str(path_reason)
     if student.get("readme_status") == "MISSING":
         return "README_MISSING"
     required = set(grading_policy.get("required_collaborators", ()))
@@ -124,6 +130,16 @@ def build_dry_run_diagnostics(
         for student in students
         if student.get("score") == 1.0
     )
+    overrides = tuple(
+        (
+            str(student["student_id"]),
+            str(student.get("manual_override_action") or "MANUAL_OVERRIDE"),
+            student.get("manual_override_source_revision"),
+            student.get("score"),
+        )
+        for student in students
+        if student.get("grade_resolution_source") == "MANUAL_OVERRIDE"
+    )
     return DryRunDiagnostics(
         score_counts,
         dict(sorted(reasons.items())),
@@ -132,6 +148,7 @@ def build_dry_run_diagnostics(
         unresolved,
         zero_students,
         full_students,
+        overrides,
         dict(sorted(evidence_sources.items())),
     )
 
@@ -155,6 +172,7 @@ def format_dry_run_diagnostics(diagnostics: DryRunDiagnostics, *, details: bool 
     lines.extend(f"  {key}: {value}" for key, value in diagnostics.submission_statuses.items())
     lines.append("Submission evidence:")
     lines.extend(f"  {key}: {value}" for key, value in diagnostics.evidence_sources.items())
+    lines.append(f"Manual overrides applied: {len(diagnostics.override_students)}")
     lines.append("Timing diagnostics:")
     for key, value in diagnostics.timing.items():
         if isinstance(value, bool):
@@ -163,6 +181,13 @@ def format_dry_run_diagnostics(diagnostics: DryRunDiagnostics, *, details: bool 
     if diagnostics.timing["late_window_required_by_rubric"] and not diagnostics.timing["absence_late_evidence_settled"]:
         lines.append("LATE_WINDOW_NOT_SETTLED: students without an accepted submission cannot yet be finalized as LATE or NOT_SUBMITTED.")
     if details:
+        lines.append("Resolved override students:")
+        lines.extend(
+            f"  {student_id}: {action} source_revision={revision} score={score}"
+            for student_id, action, revision, score in diagnostics.override_students
+        )
+        if not diagnostics.override_students:
+            lines.append("  none")
         lines.append("Resolved 0.0 students:")
         lines.extend(
             f"  {student_id}: {reason}"

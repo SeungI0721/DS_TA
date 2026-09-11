@@ -127,11 +127,13 @@ Section 01
 Section 02
 ```
 
-마감:
+공식 공지 마감:
 
 ```text
-2026-09-03T23:59:59+09:00
+2026-09-03 23:59 KST
 ```
+
+기계 비교 cutoff는 해당 분의 끝인 `2026-09-03T23:59:59+09:00`로 정규화한다.
 
 최대 점수:
 
@@ -154,7 +156,11 @@ Week 1에는 `0.5`가 없다.
 ```text
 마감일까지 repository root README.md 존재
 +
-assistant/TA collaborator ACTIVE
+(week01/README.md 또는 week01-01/README.md 존재)
++
+professor collaborator 현재 ACTIVE
++
+assistant/TA collaborator 현재 ACTIVE
 ```
 
 ## Week 1에서 점수 조건이 아닌 것
@@ -162,7 +168,6 @@ assistant/TA collaborator ACTIVE
 다음은 Week 1 점수에 영향을 주지 않는다.
 
 ```text
-professor collaborator
 README 내부 학생 이름
 README 내부 학번
 특정 branch 이름
@@ -219,6 +224,8 @@ GitHub REST API commit history
 commit.committer.date <= deadline
 +
 해당 commit SHA에 repository-root README.md 존재
++
+(week01/README.md 또는 week01-01/README.md 존재)
 ```
 
 이 경우:
@@ -551,10 +558,10 @@ Week 1:
 
 ```text
 assistant collaborator required
-professor collaborator not required
+professor collaborator required
 ```
 
-다른 주차에서 professor collaborator가 필요할 수 있으므로 기능 자체는 제거하지 않는다.
+두 collaborator는 deadline 당시 상태가 아니라 채점 시점의 현재 `ACTIVE` 상태를 확인한다.
 
 Collaborator 상태:
 
@@ -579,9 +586,9 @@ Week 1:
 
 ```text
 repository root README.md 존재
++
+(week01/README.md 또는 week01-01/README.md 존재)
 ```
-
-만 요구한다.
 
 Week 1에서는 README 내부:
 
@@ -594,13 +601,13 @@ name
 
 다른 rubric이 identity partial scoring을 활성화할 경우에만 해당 로직을 사용한다.
 
-Nested README는 root README 대체물이 아니다.
+Project README는 rubric에 명시된 두 정확한 경로 중 하나여야 하며 root README를 대체하지 않는다.
 
 ---
 
 # 17. Canonical grading record
 
-Canonical record는 성적의 authoritative source다.
+Canonical record는 자동 채점 결과의 authoritative source다. 승인된 private manual grade adjustment가 있으면 보고서의 effective grade는 canonical 자동 점수와 adjustment를 함께 사용한다.
 
 경로 예:
 
@@ -1359,7 +1366,10 @@ PushEvent absence
 
 ```text
 canonical JSON
-= authoritative grading record
+= authoritative automatic grading record
+
+private manual grade adjustment
+= human-approved effective-grade correction
 ```
 
 ```text

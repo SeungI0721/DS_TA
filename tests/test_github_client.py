@@ -141,6 +141,26 @@ def test_commit_history_follows_link_pagination() -> None:
     assert len(session.calls) == 2
 
 
+def test_exact_repository_paths_are_checked_at_selected_sha() -> None:
+    tree = {
+        "truncated": False,
+        "tree": [
+            {"path": "README.md", "type": "blob"},
+            {"path": "week01/README.md", "type": "blob"},
+            {"path": "Week01/README.md", "type": "blob"},
+        ],
+    }
+    api, session = client([make_response(data=tree)])
+    paths = ("README.md", "week01/README.md", "week01-01/README.md")
+    result = api.get_paths_at_sha(REPO, "a" * 40, paths)
+    assert {item.path: item.exists for item in result.paths} == {
+        "README.md": True,
+        "week01/README.md": True,
+        "week01-01/README.md": False,
+    }
+    assert session.calls[0]["params"] == {"recursive": "1"}
+
+
 def test_successful_repository_metadata_retrieval() -> None:
     api, session = client([make_response(data=repository_json())])
     metadata = api.get_repository(REPO)

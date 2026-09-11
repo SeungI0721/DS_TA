@@ -104,6 +104,44 @@ def test_zero_reason_uses_required_assistant_collaborator_status() -> None:
     assert diagnostics.resolved_zero_students == (("EXAMPLE003", "ASSISTANT_COLLABORATOR_MISSING"),)
 
 
+def test_zero_reason_preserves_required_path_failure() -> None:
+    value = record()
+    value["students"][2].update(
+        {
+            "submission_status": "ON_TIME",
+            "required_path_failure_reason": "PROJECT_README_MISSING",
+        }
+    )
+    diagnostics = build_dry_run_diagnostics(
+        value, settle_delay_hours=6, current_time=NOW
+    )
+    assert diagnostics.resolved_zero_students == (
+        ("EXAMPLE003", "PROJECT_README_MISSING"),
+    )
+
+
+def test_details_show_manual_override_without_repository_data() -> None:
+    value = record()
+    value["students"][0].update(
+        {
+            "grade_resolution_source": "MANUAL_OVERRIDE",
+            "manual_override_action": "PRESERVE_PREVIOUS_CANONICAL_RESULT",
+            "manual_override_source_revision": 2,
+            "repository": "private-owner/private-repository",
+        }
+    )
+    diagnostics = build_dry_run_diagnostics(
+        value, settle_delay_hours=6, current_time=NOW
+    )
+    lines = format_dry_run_diagnostics(diagnostics, details=True)
+    assert "Manual overrides applied: 1" in lines
+    assert any(
+        line.startswith("  EXAMPLE001: PRESERVE_PREVIOUS_CANONICAL_RESULT")
+        for line in lines
+    )
+    assert "private-owner" not in "\n".join(lines)
+
+
 def test_student_level_unknown_failure_still_produces_complete_summary() -> None:
     value = record()
     value["students"].append(

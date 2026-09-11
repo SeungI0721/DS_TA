@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from main import build_parser, main
@@ -27,6 +29,24 @@ def test_grade_details_requires_dry_run(monkeypatch) -> None:
         main(["grade", "--week", "1", "--section", "01", "--details"])
 
 
+def test_production_grade_requires_operator_confirmation(monkeypatch, tmp_path) -> None:
+    course = SimpleNamespace(
+        sections=("01",), operator_confirmations=(), github_request={},
+        github_api_version="2026-03-10",
+    )
+    rubric = SimpleNamespace(
+        grading=SimpleNamespace(
+            required_operator_confirmations=("professor_github_identity",)
+        )
+    )
+    monkeypatch.setattr("main.load_global_config", lambda _path: course)
+    monkeypatch.setattr("main.load_students", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("main.load_weekly_rubric", lambda _path: rubric)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["grade", "--week", "1", "--section", "01"])
+
+
 def test_validate_config_uses_local_runtime_file(monkeypatch, tmp_path) -> None:
     calls = []
     monkeypatch.chdir(tmp_path)
@@ -38,6 +58,9 @@ def test_validate_config_uses_local_runtime_file(monkeypatch, tmp_path) -> None:
 
 def test_report_cli_never_initializes_github(monkeypatch, tmp_path) -> None:
     class Store:
+        def private_file_preflight(self, path):
+            return None
+
         def load(self, section, week):
             return {"section": section, "week": week, "students": []}
 

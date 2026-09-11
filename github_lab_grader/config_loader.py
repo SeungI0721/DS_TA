@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 from .models import (
     CourseConfig,
     GradingRules,
+    PathGroupMatch,
+    RequiredPathGroup,
     ScoringMode,
     SubmissionEvidenceType,
     ScoreRules,
@@ -145,6 +147,11 @@ def load_global_config(path: Path, *, enforce_private_runtime: bool = True) -> C
         raise ConfigurationError("sections must be a string array")
     if not isinstance(request, dict):
         raise ConfigurationError("github_request must be an object")
+    confirmations = data.get("operator_confirmations", [])
+    if not isinstance(confirmations, list) or not all(
+        isinstance(item, str) and item for item in confirmations
+    ) or len(set(confirmations)) != len(confirmations):
+        raise ConfigurationError("operator_confirmations must be a string array")
     try:
         return CourseConfig(
             schema_version=int(data["schema_version"]),
@@ -164,6 +171,7 @@ def load_global_config(path: Path, *, enforce_private_runtime: bool = True) -> C
                 data.get("github_event_history_max_age_days", 30)
             ),
             github_request=dict(request),
+            operator_confirmations=tuple(confirmations),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigurationError(f"invalid global configuration: {exc}") from exc
@@ -234,6 +242,37 @@ def load_weekly_rubric(path: Path) -> WeeklyRubric:
         raise ConfigurationError("grading and score_rules must be objects")
     sections: dict[str, SectionDeadline] = {}
     try:
+        raw_path_groups = grading_data.get("required_path_groups", ())
+        if not isinstance(raw_path_groups, (list, tuple)) or any(
+            not isinstance(group, dict)
+            or not isinstance(group.get("paths"), list)
+            or not all(isinstance(item, str) for item in group["paths"])
+            for group in raw_path_groups
+        ):
+            raise ConfigurationError("required_path_groups must contain path arrays")
+        required_confirmations = grading_data.get(
+            "required_operator_confirmations", ()
+        )
+        if not isinstance(required_confirmations, (list, tuple)) or any(
+            not isinstance(item, str) or not item
+            for item in required_confirmations
+        ):
+            raise ConfigurationError(
+                "required_operator_confirmations must be a string array"
+            )
+        path_groups = tuple(
+            RequiredPathGroup(
+                name=_required_text(group, "name"),
+                match=PathGroupMatch(group.get("match", "ANY")),
+                paths=tuple(group["paths"]),
+                failure_reason=(
+                    str(group["failure_reason"])
+                    if group.get("failure_reason") is not None
+                    else None
+                ),
+            )
+            for group in raw_path_groups
+        )
         for section, timing in sections_data.items():
             if not isinstance(section, str) or not section or not isinstance(timing, dict):
                 raise ConfigurationError("rubric section entry is invalid")
@@ -273,6 +312,8 @@ def load_weekly_rubric(path: Path) -> WeeklyRubric:
                             "submission_evidence_sources", ["PUSH_EVENT"]
                         )
                     ),
+                    "required_path_groups": path_groups,
+                    "required_operator_confirmations": tuple(required_confirmations),
                 }
             ),
             score_rules=ScoreRules(**{key: float(value) for key, value in scores_data.items()}),

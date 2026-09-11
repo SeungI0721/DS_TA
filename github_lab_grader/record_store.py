@@ -17,8 +17,12 @@ from .models import (
     CollaboratorStatus,
     CourseConfig,
     GradeResult,
+    GradeResolutionSource,
     GradingStatus,
     LateWindowSource,
+    ManualOverrideAction,
+    PathGroupMatch,
+    PathGroupStatus,
     ReadmeStatus,
     SubmissionStatus,
     SubmissionEvidenceSource,
@@ -109,6 +113,27 @@ def _student(result: GradeResult) -> dict[str, Any]:
         "selected_submission_sha": result.selected_submission_sha,
         "selected_submission_timestamp": _iso(result.selected_submission_timestamp, "selected_submission_timestamp") if result.selected_submission_timestamp else None,
         "selected_submission_timestamp_type": result.selected_submission_timestamp_type.value if result.selected_submission_timestamp_type else None,
+        "required_path_checks": [
+            {
+                "name": check.name,
+                "match": check.match.value,
+                "paths": list(check.paths),
+                "matched_path": check.matched_path,
+                "status": check.status.value,
+                "failure_reason": check.failure_reason,
+            }
+            for check in result.required_path_checks
+        ],
+        "required_path_failure_reason": result.required_path_failure_reason,
+        "grade_resolution_source": result.grade_resolution_source.value,
+        "manual_override_action": result.manual_override_action.value if result.manual_override_action else None,
+        "manual_override_reason": result.manual_override_reason,
+        "manual_override_source_revision": result.manual_override_source_revision,
+        "manual_override_source_run_id": result.manual_override_source_run_id,
+        "automatic_score_before_override": result.automatic_score_before_override,
+        "automatic_grading_status_before_override": result.automatic_grading_status_before_override.value if result.automatic_grading_status_before_override else None,
+        "automatic_submission_status_before_override": result.automatic_submission_status_before_override.value if result.automatic_submission_status_before_override else None,
+        "automatic_reason_before_override": result.automatic_reason_before_override,
         "professor_collaborator_status": result.professor_collaborator.value,
         "assistant_collaborator_status": result.assistant_collaborator.value,
         "professor_collaborator_checked_at": _iso(result.professor_collaborator_checked_at, "professor_collaborator_checked_at") if result.professor_collaborator_checked_at else None,
@@ -188,7 +213,7 @@ def build_canonical_record(course: CourseConfig, rubric: WeeklyRubric, section: 
             "deadline_note": resolved.deadline_note if resolved else timing.deadline_note,
             "submission_branch": rubric.submission_branch,
         },
-        "grading_policy": {"max_score": rubric.max_score, "score_rules": {"full": rubric.score_rules.full, "partial": rubric.score_rules.partial, "fail": rubric.score_rules.fail}, "require_student_push_actor": rubric.require_student_push_actor, "scoring_mode": rubric.grading.scoring_mode.value, "require_timely_push": rubric.grading.require_timely_push, "require_root_readme": rubric.grading.readme_required, "required_collaborators": [role for role, required in (("professor", rubric.grading.professor_collaborator_required), ("assistant", rubric.grading.assistant_collaborator_required)) if required], "require_readme_identity": rubric.grading.student_id_required or rubric.grading.student_name_required, "use_late_window": rubric.grading.use_late_window, "enforce_submission_window_start": rubric.grading.enforce_submission_window_start, "enforce_submission_branch": rubric.grading.enforce_submission_branch, "submission_evidence_sources": [source.value for source in rubric.grading.submission_evidence_sources]},
+        "grading_policy": {"max_score": rubric.max_score, "score_rules": {"full": rubric.score_rules.full, "partial": rubric.score_rules.partial, "fail": rubric.score_rules.fail}, "require_student_push_actor": rubric.require_student_push_actor, "scoring_mode": rubric.grading.scoring_mode.value, "require_timely_push": rubric.grading.require_timely_push, "require_root_readme": rubric.grading.readme_required, "required_collaborators": [role for role, required in (("professor", rubric.grading.professor_collaborator_required), ("assistant", rubric.grading.assistant_collaborator_required)) if required], "require_readme_identity": rubric.grading.student_id_required or rubric.grading.student_name_required, "use_late_window": rubric.grading.use_late_window, "enforce_submission_window_start": rubric.grading.enforce_submission_window_start, "enforce_submission_branch": rubric.grading.enforce_submission_branch, "submission_evidence_sources": [source.value for source in rubric.grading.submission_evidence_sources], "required_path_groups": [{"name": group.name, "match": group.match.value, "paths": list(group.paths), "failure_reason": group.failure_reason} for group in rubric.grading.required_path_groups]},
         "summary": _summary(students), "students": students,
     }
     return validate_record(record)
@@ -206,6 +231,23 @@ def _validate_student(student: object, index: int) -> None:
         ReadmeStatus(student["readme_status"])
     except (ValueError, TypeError) as exc:
         raise CorruptedRecordError(f"student result {index} has an invalid status") from exc
+    source = student.get("grade_resolution_source", "AUTOMATIC")
+    try:
+        resolution = GradeResolutionSource(source)
+        action = student.get("manual_override_action")
+        if action is not None:
+            ManualOverrideAction(action)
+    except (ValueError, TypeError) as exc:
+        raise CorruptedRecordError(f"student result {index} has invalid override provenance") from exc
+    if resolution is GradeResolutionSource.MANUAL_OVERRIDE:
+        required_override = (
+            "manual_override_action",
+            "manual_override_reason",
+            "manual_override_source_revision",
+            "manual_override_source_run_id",
+        )
+        if any(student.get(field) in (None, "") for field in required_override):
+            raise CorruptedRecordError(f"student result {index} has incomplete override provenance")
     _time(student["graded_at"], f"students[{index}].graded_at")
     if student.get("submission_push_created_at") is not None:
         _time(student["submission_push_created_at"], f"students[{index}].submission_push_created_at")
@@ -218,6 +260,17 @@ def _validate_student(student: object, index: int) -> None:
                 SubmissionTimestampType(student["selected_submission_timestamp_type"])
         except (ValueError, TypeError) as exc:
             raise CorruptedRecordError(f"student result {index} has invalid evidence provenance") from exc
+    path_checks = student.get("required_path_checks", [])
+    if not isinstance(path_checks, list):
+        raise CorruptedRecordError(f"student result {index} has invalid path checks")
+    for check in path_checks:
+        try:
+            if not isinstance(check, dict) or not isinstance(check.get("paths"), list):
+                raise TypeError
+            PathGroupMatch(check.get("match"))
+            PathGroupStatus(check.get("status"))
+        except (ValueError, TypeError) as exc:
+            raise CorruptedRecordError(f"student result {index} has invalid path checks") from exc
     for field in ("professor_collaborator_checked_at", "assistant_collaborator_checked_at"):
         if student.get(field) is not None:
             _time(student[field], f"students[{index}].{field}")
@@ -326,6 +379,11 @@ class RecordStore:
     def privacy_preflight(self, section: object, week: object) -> None:
         """GitHub 요청 전에 canonical 출력 경로의 추적 여부를 확인한다."""
         self._privacy(self.canonical_path(section, week))
+
+    def private_file_preflight(self, path: Path) -> None:
+        """Local-only 운영 입력이 Git에 추적되지 않았는지 확인한다."""
+        if self._tracked_checker(path.resolve()):
+            raise RecordSecurityError("tracked private override file blocks grading")
 
     def _load_path(self, path: Path) -> dict[str, Any]:
         try:

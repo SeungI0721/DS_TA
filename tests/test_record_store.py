@@ -10,7 +10,8 @@ import pytest
 
 from github_lab_grader.models import (
     CollaboratorStatus, CourseConfig, GradeResult, GradingRules, GradingStatus,
-    LateWindowSource, ReadmeStatus, ScoreRules, SectionDeadline,
+    LateWindowSource, PathGroupMatch, PathGroupStatus, ReadmeStatus,
+    RequiredPathGroupResult, ScoreRules, SectionDeadline,
     SubmissionStatus, WeeklyRubric,
 )
 from github_lab_grader.grading_workflow import grade_and_persist
@@ -69,6 +70,28 @@ def test_first_write_round_trip_preserves_unicode_null_zero_and_sha(store: Recor
     assert loaded["timing_policy"]["late_window_source"] == "EXPLICIT"
     assert loaded["summary"] == {"total_students": 4, "graded_1_0": 1, "graded_0_5": 1, "graded_0_0": 1, "manual_review": 1, "errors": 0, "unverifiable": 1, "ungraded_or_null": 1, "earned_score": 1.5, "possible_score": 4.0}
     assert "+00:00" in loaded["record_created_at"]
+
+
+def test_canonical_record_preserves_optional_required_path_provenance() -> None:
+    value = result(0.0)
+    value.required_path_checks = (
+        RequiredPathGroupResult(
+            "week_project_readme",
+            PathGroupMatch.ANY,
+            ("week01/README.md", "week01-01/README.md"),
+            None,
+            PathGroupStatus.MISSING,
+            "PROJECT_README_MISSING",
+        ),
+    )
+    value.required_path_failure_reason = "PROJECT_README_MISSING"
+    record = build_canonical_record(
+        course("01"), rubric(), "01", [value], recorded_at=NOW
+    )
+    student = record["students"][0]
+    assert student["required_path_failure_reason"] == "PROJECT_README_MISSING"
+    assert student["required_path_checks"][0]["matched_path"] is None
+    assert validate_record(record) == record
 
 
 def test_normal_overwrite_is_refused_without_archive(store: RecordStore) -> None:
