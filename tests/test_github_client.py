@@ -161,6 +161,27 @@ def test_exact_repository_paths_are_checked_at_selected_sha() -> None:
     assert session.calls[0]["params"] == {"recursive": "1"}
 
 
+def test_c_sources_are_discovered_recursively_at_selected_sha() -> None:
+    tree = {
+        "truncated": False,
+        "tree": [
+            {"path": "week02-01", "type": "tree"},
+            {"path": "week02-01/custom.c", "type": "blob"},
+            {"path": "week02-01/Debug/generated.c", "type": "blob"},
+            {"path": "week02-02", "type": "tree"},
+        ],
+    }
+    encoded = base64.b64encode(b"int main(void) { return 0; }").decode()
+    api, session = client(
+        [make_response(data=tree), make_response(data={"encoding": "base64", "content": encoded})]
+    )
+    result = api.get_c_sources_at_sha(REPO, "a" * 40, ("week02-01", "week02-02"))
+    assert result.ref == "a" * 40
+    assert result.projects[0].files[0].path == "week02-01/custom.c"
+    assert result.projects[1].exists and result.projects[1].files == ()
+    assert len(session.calls) == 2
+
+
 def test_successful_repository_metadata_retrieval() -> None:
     api, session = client([make_response(data=repository_json())])
     metadata = api.get_repository(REPO)

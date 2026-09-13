@@ -53,7 +53,7 @@ def test_submission_and_timing_diagnostics_explain_unsettled_late_window() -> No
     assert diagnostics.timing["accepted_submission_evidence_settled"] is True
     assert diagnostics.timing["absence_late_evidence_settled"] is False
     lines = format_dry_run_diagnostics(diagnostics)
-    assert any(line.startswith("LATE_WINDOW_NOT_SETTLED:") for line in lines)
+    assert any("(LATE_WINDOW_NOT_SETTLED):" in line for line in lines)
     assert not any("EXAMPLE004" in line for line in lines)
 
 
@@ -63,7 +63,7 @@ def test_details_are_minimal_and_diagnostics_do_not_mutate_results() -> None:
     diagnostics = build_dry_run_diagnostics(original, settle_delay_hours=6, current_time=NOW)
     lines = format_dry_run_diagnostics(diagnostics, details=True)
     assert original == before
-    assert "  EXAMPLE004: MISSING_REPOSITORY_INFO" in lines
+    assert "  EXAMPLE004: GitHub 저장소 정보 미등록 (MISSING_REPOSITORY_INFO)" in lines
     assert all("token" not in line.lower() for line in lines)
 
 
@@ -81,9 +81,9 @@ def test_details_list_resolved_zero_reason_separately_without_sensitive_fields()
     before_counts = dict(diagnostics.score_counts)
     aggregate = format_dry_run_diagnostics(diagnostics)
     details = format_dry_run_diagnostics(diagnostics, details=True)
-    assert "  EXAMPLE003: README_MISSING" in details
-    assert "  EXAMPLE004: MISSING_REPOSITORY_INFO" in details
-    assert "  EXAMPLE001: INSUFFICIENT_EVIDENCE" in details
+    assert "  EXAMPLE003: README.md 누락 (README_MISSING)" in details
+    assert "  EXAMPLE004: GitHub 저장소 정보 미등록 (MISSING_REPOSITORY_INFO)" in details
+    assert "  EXAMPLE001: 제출 근거 부족 (INSUFFICIENT_EVIDENCE)" in details
     assert not any("EXAMPLE003" in line for line in aggregate)
     assert diagnostics.score_counts == before_counts == {"1.0": 1, "0.5": 1, "0.0": 1, "null": 4}
     joined = "\n".join(details)
@@ -134,9 +134,9 @@ def test_details_show_manual_override_without_repository_data() -> None:
         value, settle_delay_hours=6, current_time=NOW
     )
     lines = format_dry_run_diagnostics(diagnostics, details=True)
-    assert "Manual overrides applied: 1" in lines
+    assert "수동 예외 적용: 1" in lines
     assert any(
-        line.startswith("  EXAMPLE001: PRESERVE_PREVIOUS_CANONICAL_RESULT")
+        line.startswith("  EXAMPLE001: 이전 canonical 결과 유지 (PRESERVE_PREVIOUS_CANONICAL_RESULT)")
         for line in lines
     )
     assert "private-owner" not in "\n".join(lines)
@@ -150,6 +150,32 @@ def test_student_level_unknown_failure_still_produces_complete_summary() -> None
     diagnostics = build_dry_run_diagnostics(value, settle_delay_hours=6, current_time=NOW)
     assert diagnostics.score_counts["null"] == 5
     assert diagnostics.null_reasons["ERROR"] == 1
+
+
+def test_component_dry_run_details_show_score_lattice_and_no_repository() -> None:
+    value = record()
+    value["grading_policy"]["scoring_mode"] = "COMPONENT_SUM"
+    value["students"] = [
+        {
+            "student_id": "EXAMPLE001",
+            "score": 0.75,
+            "submission_status": "ON_TIME",
+            "grading_status": "PARTIAL",
+            "error_code": None,
+            "repository": "private-owner/private-repository",
+            "component_results": [
+                {"project_path": "week02-01", "practice_number": 1, "status": "PASS", "score": 0.25, "reason": "PASS"},
+                {"project_path": "week02-02", "practice_number": 3, "status": "FAIL", "score": 0.0, "reason": "NEGATIVE_COUNT_INCORRECT"},
+            ],
+        }
+    ]
+    diagnostics = build_dry_run_diagnostics(value, settle_delay_hours=6, current_time=NOW)
+    lines = format_dry_run_diagnostics(diagnostics, details=True)
+    assert diagnostics.score_counts["0.75"] == 1
+    assert diagnostics.component_outcomes == {"FAIL": 1, "PASS": 1}
+    assert "  EXAMPLE001:" in lines
+    assert "    total=0.75" in lines
+    assert "private-owner" not in "\n".join(lines)
 
 
 def test_no_late_window_rubric_uses_effective_settle_without_misleading_warning() -> None:

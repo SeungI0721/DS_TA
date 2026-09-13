@@ -12,6 +12,8 @@ from github_lab_grader.manual_grade_adjustments import (
     apply_adjustments_to_weekly_records,
     apply_manual_grade_adjustments,
 )
+from github_lab_grader.config_loader import load_weekly_rubric
+from github_lab_grader.models import ComponentResult, ComponentStatus
 from phase6_helpers import NOW, make_course, make_record, make_result, make_rubric, make_student
 
 
@@ -103,8 +105,8 @@ def test_weekly_report_exposes_required_path_group_results(writer: ExcelReportWr
         "Project README 경로",
     ]
     assert [sheet.cell(2, column).value for column in range(21, 24)] == [
-        "SATISFIED",
-        "SATISFIED",
+        "충족 (SATISFIED)",
+        "충족 (SATISFIED)",
         "week01-01/README.md",
     ]
     workbook.close()
@@ -126,7 +128,7 @@ def test_weekly_report_exposes_manual_override_resolution(writer: ExcelReportWri
     sheet = workbook["Section01"]
     assert sheet["X1"].value == "Resolution Source"
     assert sheet["Y1"].value == "Override Reason"
-    assert sheet["X2"].value == "MANUAL_OVERRIDE"
+    assert sheet["X2"].value == "수동 예외 적용 (MANUAL_OVERRIDE)"
     assert sheet["Y2"].value == "fictional approved exception"
     workbook.close()
 
@@ -144,7 +146,7 @@ def test_weekly_report_separates_automatic_adjustment_and_effective_scores(write
         "자동점수", "수동조정", "최종점수", "점수출처", "수동조정사유",
     ]
     assert [sheet.cell(2, column).value for column in range(5, 9)] == [
-        None, 1.0, 1.0, "MANUAL_ADJUSTMENT",
+        None, 1.0, 1.0, "수동 점수 조정 (MANUAL_ADJUSTMENT)",
     ]
     assert sheet["I2"].data_type != "f" and str(sheet["I2"].value).startswith("'")
     workbook.close()
@@ -190,6 +192,40 @@ def test_final_report_uses_effective_manual_adjustment_score(writer: ExcelReport
     workbook.close()
 
 
+def test_week02_report_exposes_component_scores_and_safe_reasons(writer: ExcelReportWriter) -> None:
+    rubric = load_weekly_rubric(Path(__file__).resolve().parents[1] / "rubrics" / "week02.json")
+    course = make_course(("01",), weeks=2)
+    student = make_student("EXAMPLE001")
+    result = make_result(student, week=2, score=0.75)
+    result.component_results = tuple(
+        ComponentResult(
+            definition.component_id,
+            definition.project_path,
+            definition.practice_number,
+            ComponentStatus.FAIL if definition.practice_number == 5 else ComponentStatus.PASS,
+            0.0 if definition.practice_number == 5 else 0.25,
+            0.25,
+            "=FIRST_MATCH_RULE_INCORRECT" if definition.practice_number == 5 else "PASS",
+            "a" * 40,
+            "PUSH_EVENT_CONFIRMED",
+        )
+        for definition in rubric.components_by_section["01"]
+    )
+    record = make_record(course, rubric, results=[result])
+    workbook = load_workbook(writer.write_weekly_report([record], rubric), data_only=False)
+    sheet = workbook["Section01"]
+    headers = [cell.value for cell in sheet[1]]
+    assert headers[4:12] == ["실습1", "실습1 사유", "실습3", "실습3 사유", "실습5", "실습5 사유", "실습7", "실습7 사유"]
+    assert [sheet.cell(2, column).value for column in (5, 7, 9, 11)] == [0.25, 0.25, 0.0, 0.25]
+    assert sheet.cell(2, 10).data_type != "f"
+    assert "FIRST_MATCH_RULE_INCORRECT" in str(sheet.cell(2, 10).value)
+    assert "알 수 없는 판정 사유" in str(sheet.cell(2, 10).value)
+    assert [cell.value for cell in workbook["요약"][1]][2:7] == [
+        "1.00", "0.75", "0.50", "0.25", "0.00"
+    ]
+    workbook.close()
+
+
 @pytest.mark.parametrize("payload", ["=1+1", "+CMD", "-1+2", "@SUM(A1:A2)"])
 def test_safe_excel_text_neutralizes_formula_prefixes(payload: str) -> None:
     assert safe_excel_text(payload) == "'" + payload
@@ -201,8 +237,9 @@ def test_untrusted_weekly_fields_are_never_formulas(writer: ExcelReportWriter) -
     record = make_record(course, rubric, results=[make_result(malicious, score=None, reason="@SUM(A1:A2)")])
     workbook = load_workbook(writer.write_weekly_report([record], rubric), data_only=False)
     sheet = workbook["Section01"]
-    for coordinate in ("B2", "C2", "D2", "Z2"):
+    for coordinate in ("B2", "C2", "D2"):
         assert sheet[coordinate].data_type != "f" and str(sheet[coordinate].value).startswith("'")
+    assert sheet["Z2"].data_type != "f" and "@SUM(A1:A2)" in str(sheet["Z2"].value)
     workbook.close()
 
 

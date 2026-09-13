@@ -75,6 +75,28 @@ class ManualOverrideAction(StrEnum):
 class ScoringMode(StrEnum):
     BINARY = "BINARY"
     IDENTITY_PARTIAL = "IDENTITY_PARTIAL"
+    COMPONENT_SUM = "COMPONENT_SUM"
+
+
+class DeadlineResolution(StrEnum):
+    SECOND = "SECOND"
+    MINUTE = "MINUTE"
+
+
+class ComponentStatus(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    UNVERIFIABLE = "UNVERIFIABLE"
+
+
+class CCheckerId(StrEnum):
+    MAX_VALUE = "MAX_VALUE"
+    MIN_VALUE = "MIN_VALUE"
+    NEGATIVE_COUNT = "NEGATIVE_COUNT"
+    POSITIVE_SUM_AVERAGE = "POSITIVE_SUM_AVERAGE"
+    MAX_INDEX_FIRST = "MAX_INDEX_FIRST"
+    MIN_INDEX_FIRST = "MIN_INDEX_FIRST"
+    ARRAY_COMPARE_MAE = "ARRAY_COMPARE_MAE"
 
 
 class SubmissionEvidenceType(StrEnum):
@@ -278,6 +300,25 @@ class RepositoryPathsAtSha:
 
 
 @dataclass(frozen=True, slots=True)
+class RepositorySourceFile:
+    path: str
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryProjectSources:
+    project_path: str
+    exists: bool
+    files: tuple[RepositorySourceFile, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RepositorySourcesAtSha:
+    ref: str
+    projects: tuple[RepositoryProjectSources, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class GradingRules:
     professor_collaborator_required: bool = True
     assistant_collaborator_required: bool = True
@@ -317,6 +358,52 @@ class ScoreRules:
 
 
 @dataclass(frozen=True, slots=True)
+class GradingComponent:
+    component_id: str
+    project_path: str
+    practice_number: int
+    max_score: float
+    checker: CCheckerId
+
+    def __post_init__(self) -> None:
+        parts = self.project_path.split("/")
+        if (
+            not self.component_id
+            or self.practice_number <= 0
+            or self.max_score <= 0
+            or not self.project_path
+            or self.project_path.startswith("/")
+            or "\\" in self.project_path
+            or any(part in {"", ".", ".."} for part in parts)
+        ):
+            raise ValueError("grading component is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ComponentResult:
+    component_id: str
+    project_path: str
+    practice_number: int
+    status: ComponentStatus
+    score: float | None
+    max_score: float
+    reason: str
+    historical_sha: str | None
+    evidence_source: str
+
+    def __post_init__(self) -> None:
+        if self.status is ComponentStatus.UNVERIFIABLE:
+            if self.score is not None:
+                raise ValueError("unverifiable component must have a null score")
+        elif self.score is None or not 0 <= self.score <= self.max_score:
+            raise ValueError("resolved component score is invalid")
+        elif self.status is ComponentStatus.PASS and self.score != self.max_score:
+            raise ValueError("passing component must receive full component score")
+        elif self.status is ComponentStatus.FAIL and self.score != 0:
+            raise ValueError("failed component must receive zero")
+
+
+@dataclass(frozen=True, slots=True)
 class WeeklyRubric:
     week: int
     title: str
@@ -327,6 +414,10 @@ class WeeklyRubric:
     grading: GradingRules
     score_rules: ScoreRules
     schema_version: int = 1
+    deadline_resolution: DeadlineResolution = DeadlineResolution.SECOND
+    components_by_section: dict[str, tuple[GradingComponent, ...]] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         if self.week <= 0 or self.max_score <= 0 or not self.sections:
@@ -339,6 +430,21 @@ class WeeklyRubric:
             raise ValueError("score rules must be ordered")
         if self.score_rules.full > self.max_score:
             raise ValueError("full score must not exceed max_score")
+        if self.grading.scoring_mode is ScoringMode.COMPONENT_SUM:
+            if set(self.components_by_section) != set(self.sections):
+                raise ValueError("component scoring requires components for every section")
+            for section, components in self.components_by_section.items():
+                if not components or len({item.component_id for item in components}) != len(components):
+                    raise ValueError(f"section {section} component identifiers must be unique")
+                if any(
+                    abs(item.max_score - self.score_rules.partial) > 1e-9
+                    for item in components
+                ):
+                    raise ValueError(f"section {section} component scores must match partial increment")
+                if abs(sum(item.max_score for item in components) - self.max_score) > 1e-9:
+                    raise ValueError(f"section {section} component scores must sum to max_score")
+        elif self.components_by_section:
+            raise ValueError("components require COMPONENT_SUM scoring")
 
 
 @dataclass(frozen=True, slots=True)
@@ -513,6 +619,7 @@ class GradeResult:
     automatic_grading_status_before_override: GradingStatus | None = None
     automatic_submission_status_before_override: SubmissionStatus | None = None
     automatic_reason_before_override: str | None = None
+    component_results: tuple[ComponentResult, ...] = ()
 
     def __post_init__(self) -> None:
         required_timing = (

@@ -145,4 +145,4 @@ Professor 계정 철자에는 실제 성적을 바꿀 수 있는 운영상 모�
 - 전체 오프라인 테스트 통과
 - authenticated Dry Run과 새 0점 표본 검토 완료
 
-승인 후에만 기존 canonical record를 직접 덮어쓰지 않고 명시적 `--regrade` workflow로 archive한 뒤 새 revision을 만든다. 새 canonical revision이 성공한 후 `week-report --week 1`로 Excel을 재생성한다. 현재 작업에서는 이 명령들을 실행하지 않는다.
+승인 후에만 기존 canonical record를 직접 덮어쓰지 않고 명시적 `--regrade` workflow로 archive한 뒤 새 revision을 만든다. 새 canonical revision이 성공한 후 `week-report --week 1`로 Excel을 재생성한다. 자동 점수를 바꾸지 않고 사람이 승인한 null 해결이 필요하면 [일반 운영 가이드의 수동 검토 workflow](USAGE.md#13-수동-검토-workbook-운영)를 따른다.

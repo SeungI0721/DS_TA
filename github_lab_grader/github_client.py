@@ -30,6 +30,9 @@ from .models import (
     RepositoryPathsAtSha,
     RepositoryEventsResult,
     RepositoryMetadata,
+    RepositoryProjectSources,
+    RepositorySourceFile,
+    RepositorySourcesAtSha,
 )
 
 
@@ -463,6 +466,68 @@ class GitHubClient:
             sha,
             tuple(RepositoryPathAtSha(path, path in available) for path in requested),
         )
+
+    def get_c_sources_at_sha(
+        self, repository: str, sha: str, project_paths: Sequence[str]
+    ) -> RepositorySourcesAtSha:
+        """선택된 SHA의 project별 C source만 제한적으로 읽는다."""
+
+        repository = self._validate_repository(repository)
+        sha = self._validate_ref(sha)
+        roots = tuple(project_paths)
+        if not roots or len(set(roots)) != len(roots):
+            raise ValueError("unique project paths are required")
+        response = self._get(
+            f"/repos/{repository}/git/trees/{quote(sha, safe='')}",
+            operation=f"repository C source tree {repository} at selected SHA",
+            params={"recursive": "1"},
+        )
+        data = self._json_object(response, f"repository C source tree {repository}")
+        tree = data.get("tree")
+        if data.get("truncated") is True or not isinstance(tree, list):
+            raise GitHubApiError(
+                GitHubErrorCode.INVALID_RESPONSE,
+                f"repository C source tree {repository} at selected SHA",
+            )
+        ignored = {"build", "debug", "release", "x64", "generated", "obj", "bin"}
+        projects: list[RepositoryProjectSources] = []
+        for root in roots:
+            prefix = root + "/"
+            entries = [
+                item for item in tree
+                if isinstance(item, Mapping)
+                and isinstance(item.get("path"), str)
+                and (item["path"] == root or item["path"].startswith(prefix))
+            ]
+            paths = [
+                item["path"] for item in entries
+                if item.get("type") == "blob"
+                and item["path"].casefold().endswith((".c", ".h"))
+                and not ({part.casefold() for part in item["path"].split("/")} & ignored)
+            ]
+            if len(paths) > 32:
+                raise GitHubApiError(GitHubErrorCode.INVALID_RESPONSE, "too many C source files")
+            sources: list[RepositorySourceFile] = []
+            for path in sorted(paths):
+                content_response = self._get(
+                    f"/repos/{repository}/contents/{quote(path, safe='/')}",
+                    operation=f"C source {repository} at selected SHA",
+                    params={"ref": sha},
+                )
+                payload = self._json_object(content_response, f"C source {path}")
+                content = payload.get("content")
+                if payload.get("encoding") != "base64" or not isinstance(content, str):
+                    raise GitHubApiError(GitHubErrorCode.INVALID_RESPONSE, f"C source {path}")
+                try:
+                    raw = base64.b64decode("".join(content.split()), validate=True)
+                    if len(raw) > 1024 * 1024:
+                        raise ValueError("source too large")
+                    text = raw.decode("utf-8")
+                except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+                    raise GitHubApiError(GitHubErrorCode.INVALID_RESPONSE, f"C source {path}") from exc
+                sources.append(RepositorySourceFile(path, text))
+            projects.append(RepositoryProjectSources(root, bool(entries), tuple(sources)))
+        return RepositorySourcesAtSha(sha, tuple(projects))
 
     @staticmethod
     def find_root_readme(entries: Sequence[Mapping[str, Any]]) -> str | None:

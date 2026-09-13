@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from github_lab_grader.auth import AuthCredential, AuthSource
+from github_lab_grader.c_checker import CCompiler, CCompilerKind, CompilerProbe
 from github_lab_grader.preflight import PreflightSeverity, run_preflight
 from github_lab_grader.record_store import RecordSecurityError
 
@@ -143,3 +144,71 @@ def test_preflight_blocks_tracked_private_manual_grade_adjustment(
         1, "01", Auth(), config_path=config, roster_path=roster, rubrics_root=rubrics
     )
     assert any(item.code == "MANUAL_ADJUSTMENTS_INVALID" for item in report.items)
+
+
+def test_week02_preflight_reports_component_policy_without_week1_confirmation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config, roster, rubrics = inputs(tmp_path)
+    (rubrics / "week02.json").write_text(
+        (ROOT / "rubrics" / "week02.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    compiler = CCompiler(CCompilerKind.GCC, "fictional-gcc")
+    monkeypatch.setattr("github_lab_grader.preflight.probe_available_c_compiler", lambda: CompilerProbe(True, compiler, "fictional GCC"))
+    report = run_preflight(
+        2, "01", Auth(), config_path=config, roster_path=roster, rubrics_root=rubrics
+    )
+    assert report.ready
+    messages = {item.code: item.message for item in report.items}
+    assert messages["SCORING_MODE"].endswith("COMPONENT_SUM")
+    assert messages["DEADLINE_RESOLUTION"].endswith("MINUTE")
+    assert messages["GRADING_COMPONENTS"].endswith("4, total=1.00")
+    assert messages["C_TOOLCHAIN_AVAILABLE"].startswith("C toolchain: GCC")
+    assert "OPERATOR_CONFIRMATION_REQUIRED" not in messages
+
+
+def test_week02_preflight_blocks_when_c_execution_is_unavailable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config, roster, rubrics = inputs(tmp_path)
+    (rubrics / "week02.json").write_text(
+        (ROOT / "rubrics" / "week02.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("github_lab_grader.preflight.probe_available_c_compiler", lambda: CompilerProbe(False, None))
+    report = run_preflight(
+        2, "01", Auth(), config_path=config, roster_path=roster, rubrics_root=rubrics
+    )
+    assert not report.ready
+    assert any(item.code == "C_TOOLCHAIN_UNAVAILABLE" for item in report.items)
+
+
+def test_week01_does_not_probe_c_toolchain(monkeypatch, tmp_path: Path) -> None:
+    config, roster, rubrics = inputs(tmp_path)
+    monkeypatch.setattr(
+        "github_lab_grader.preflight.probe_available_c_compiler",
+        lambda: (_ for _ in ()).throw(AssertionError("Week 1 must not discover a compiler")),
+    )
+    assert run_preflight(1, "01", Auth(), config_path=config, roster_path=roster, rubrics_root=rubrics).ready
+
+
+def test_week02_preflight_accepts_each_supported_compiler(monkeypatch, tmp_path: Path) -> None:
+    config, roster, rubrics = inputs(tmp_path)
+    (rubrics / "week02.json").write_text((ROOT / "rubrics/week02.json").read_text(encoding="utf-8"), encoding="utf-8")
+    for kind in CCompilerKind:
+        compiler = CCompiler(kind, f"fictional-{kind.value.casefold()}")
+        monkeypatch.setattr("github_lab_grader.preflight.probe_available_c_compiler", lambda compiler=compiler: CompilerProbe(True, compiler, "fictional compiler"))
+        report = run_preflight(2, "01", Auth(), config_path=config, roster_path=roster, rubrics_root=rubrics)
+        assert report.ready
+        assert any(item.code == "C_TOOLCHAIN_AVAILABLE" and kind.value in item.message for item in report.items)
+
+
+def test_week02_preflight_blocks_when_compiler_probe_fails(monkeypatch, tmp_path: Path) -> None:
+    config, roster, rubrics = inputs(tmp_path)
+    (rubrics / "week02.json").write_text((ROOT / "rubrics/week02.json").read_text(encoding="utf-8"), encoding="utf-8")
+    compiler = CCompiler(CCompilerKind.CLANG, "fictional-clang")
+    monkeypatch.setattr("github_lab_grader.preflight.probe_available_c_compiler", lambda: CompilerProbe(False, compiler))
+    report = run_preflight(2, "01", Auth(), config_path=config, roster_path=roster, rubrics_root=rubrics)
+    assert not report.ready
+    assert any(item.code == "C_TOOLCHAIN_UNAVAILABLE" for item in report.items)

@@ -82,6 +82,8 @@ section,student_id,name,github_id,repository
 
 Week 1의 실제 채점 기준과 증거 판정 절차는 [Week 1 사용 가이드](WEEK1_USAGE.md)를 참고한다.
 
+Week 2의 component 합산, C content checker, historical snapshot 절차는 [Week 2 사용 가이드](WEEK2_USAGE.md)를 참고한다. Week 2 운영에는 원본 PDF나 별도 reference answer code가 필요하지 않다.
+
 ## 7. VS Code에서 실행하기
 
 VS Code에서 저장소를 열고 `Terminal` → `Run Task`를 선택한다. 다음 로컬 Task가 제공된다.
@@ -139,7 +141,7 @@ section,week,student_id,score,reason
 01,1,EXAMPLE001,1.0,Previously verified submission retained after repository replacement
 ```
 
-파일은 선택 사항이며 없으면 기존 보고 동작과 완전히 같다. 행은 `(section, week, student_id)`로 유일해야 하고, roster·rubric·점수 범위·scoring mode 및 non-empty reason을 검증한다. Week 1 `BINARY` rubric에는 `0.0` 또는 `1.0`만 허용한다.
+파일은 선택 사항이며 없으면 기존 보고 동작과 완전히 같다. 행은 `(section, week, student_id)`로 유일해야 하고, roster·rubric·점수 범위·scoring mode 및 non-empty reason을 검증한다. Week 1 `BINARY` rubric에는 `0.0` 또는 `1.0`만 허용하고, Week 2 `COMPONENT_SUM` rubric에는 `0.00`, `0.25`, `0.50`, `0.75`, `1.00`만 허용한다.
 
 ```powershell
 .\.venv\Scripts\python.exe main.py validate-adjustments
@@ -160,7 +162,26 @@ Weekly report는 자동점수, 수동조정, 최종점수, 점수출처, 수동�
 
 Week 1의 구체적인 binary 점수 의미는 [Week 1 사용 가이드](WEEK1_USAGE.md)를 참고한다.
 
-## 12. 확인 필요 상태
+## 12. 판정 코드 읽는 법
+
+CLI와 Excel은 `한국어 설명 (INTERNAL_CODE)` 형식으로 상태와 사유를 표시한다. 괄호 안 코드는 canonical record와 대조하는 감사용 식별자이며 변경되지 않는다. 알 수 없는 신규 코드는 `알 수 없는 판정 사유 (CODE)`로 안전하게 표시된다. Week 2 component의 구체적인 사유는 [Week 2 운영 가이드](WEEK2_USAGE.md)를 참고한다.
+
+## 13. 수동 검토 workbook 운영
+
+자동 채점과 canonical 저장이 끝난 뒤 다음 순서로 수동 검토한다.
+
+```powershell
+.\.venv\Scripts\python.exe main.py manual-review-report --week 2
+.\.venv\Scripts\python.exe main.py import-manual-review --week 2 --dry-run
+.\.venv\Scripts\python.exe main.py import-manual-review --week 2
+.\.venv\Scripts\python.exe main.py week-report --week 2
+```
+
+생성된 `output/manual_review/week02_manual_review.xlsx`에는 미확정 학생과 미확정 component만 포함된다. `수동확정 점수`는 현재 행의 component 점수가 아니라 학생의 최종 Week 02 총점이다. 점수와 사유를 모두 입력해야 하며, 비워 둔 행은 계속 미결 상태로 남는다.
+
+먼저 `--dry-run`으로 신규·동일·미입력 건수를 확인한다. 기존 adjustment와 다른 값은 자동으로 덮어쓰지 않는다. 일반 주차 성적 workbook을 직접 수정하지 않는다. 검토 workbook은 입력 UI이고, import 후 private `data/manual_grade_adjustments.csv`가 승인된 수동조정의 source of truth다. Canonical JSON은 자동 채점 원본으로 그대로 보존된다.
+
+## 14. 확인 필요 상태
 
 - `MISSING_REPOSITORY_INFO`: GitHub ID 또는 repository 미등록
 - `MANUAL_REVIEW`: 사람이 확인해야 하며 점수는 null
@@ -171,7 +192,7 @@ Week 1의 구체적인 binary 점수 의미는 [Week 1 사용 가이드](WEEK1_U
 
 이 상태들은 학생의 자동 0점 근거가 아니다.
 
-## 13. 재채점
+## 15. 재채점
 
 ```powershell
 .\.venv\Scripts\python.exe main.py grade --week 1 --section 01 --regrade --regrade-reason "검토 사유"
@@ -179,15 +200,15 @@ Week 1의 구체적인 binary 점수 의미는 [Week 1 사용 가이드](WEEK1_U
 
 재채점은 별도 명령으로만 실행한다. 이전 canonical record는 `archive/` 아래에 먼저 보존되고 새 record revision이 증가한다. 사유를 남기면 변경 이력을 이해하기 쉽다.
 
-## 14. 주차별 Excel 생성
+## 16. 주차별 Excel 생성
 
 ```powershell
 .\.venv\Scripts\python.exe main.py week-report --week 1
 ```
 
-`output/excel/week01_results.xlsx`가 생성되며 `채점기준`, 설정된 각 `SectionXX`, `요약` sheet를 포함한다. canonical records만 읽고 GitHub를 다시 조회하지 않는다.
+`output/excel/week01_results.xlsx`가 생성되며 `채점기준`, 설정된 각 `SectionXX`, `요약` sheet를 포함한다. canonical records, rubric, local roster/config와 승인된 private adjustment만 사용하고 GitHub를 다시 조회하지 않는다.
 
-## 15. 최종 실습성적 Excel 생성
+## 17. 최종 실습성적 Excel 생성
 
 ```powershell
 .\.venv\Scripts\python.exe main.py final-report
@@ -195,11 +216,11 @@ Week 1의 구체적인 binary 점수 의미는 [Week 1 사용 가이드](WEEK1_U
 
 `output/excel/final_practical_grade.xlsx`가 생성되며 설정된 각 `SectionXX`, `전체`, `주차별현황` sheet를 포함한다. 필수 주차가 null, 누락 또는 미완료이면 최종 성적도 blank다. 실제 `0.0`은 해결된 점수로 계산에 참여한다.
 
-## 16. Canonical record와 Excel의 차이
+## 18. Canonical record와 Excel의 차이
 
-Canonical JSON은 감사와 재현을 위한 자동 채점 source of truth다. 승인된 private adjustment가 있으면 보고서는 이를 결합해 effective grade를 계산한다. Excel은 검토·배포 편의를 위한 derived report다. 수정된 Excel 값을 canonical record로 읽어 들이지 않으며 보고서 생성 중 재채점하지 않는다.
+Canonical JSON은 감사와 재현을 위한 자동 채점 source of truth다. 승인된 private adjustment가 있으면 보고서는 이를 결합해 effective grade를 계산한다. 일반 주차·최종 Excel은 검토·배포 편의를 위한 derived report이며 그 값을 다시 읽지 않는다. `manual-review-report`로 만든 검토용 Excel만 승인 입력 UI로 사용하고, import 결과도 canonical이 아니라 private adjustment CSV에 저장한다. 보고서 생성 중에는 재채점하지 않는다.
 
-## 17. 자주 발생하는 문제
+## 19. 자주 발생하는 문제
 
 - GitHub CLI 미인증: `gh auth login` 후 `gh auth status`를 확인한다.
 - Repository 접근 불가: repository 이름과 권한을 확인하고 자동 0점으로 처리하지 않는다.
@@ -209,7 +230,7 @@ Canonical JSON은 감사와 재현을 위한 자동 채점 source of truth다. �
 - Excel 파일 잠김: Excel에서 파일을 닫은 뒤 다시 생성한다. 기존 파일은 보존된다.
 - Manual review 필요: canonical 사유와 주간 workbook 상세 상태를 확인한다.
 
-## 18. Git / 개인정보 주의사항
+## 20. Git / 개인정보 주의사항
 
 다음 경로는 실제 계정, 학생 정보, 성적 또는 token을 포함할 수 있으므로 절대 commit하지 않는다.
 
@@ -222,7 +243,7 @@ Canonical JSON은 감사와 재현을 위한 자동 채점 source of truth다. �
 
 실제 운영 중에는 `git add .`을 피하고 공개 가능한 파일만 명시적으로 선택한다. `git status --short`와 staged diff를 항상 확인한다.
 
-## 19. 권장 실제 운영 순서
+## 21. 권장 실제 운영 순서
 
 1. VS Code에서 저장소를 열고 GitHub CLI 인증을 확인한다.
 2. 로컬 `config.json`, `data/students.csv`, 주차 rubric을 점검한다.
@@ -231,6 +252,8 @@ Canonical JSON은 감사와 재현을 위한 자동 채점 source of truth다. �
 5. null, manual-review, error 수와 사유를 검토한다.
 6. `DS-TA: REAL Grade Section/Week`를 실행한다.
 7. canonical record가 생성되었는지 확인한다.
-8. `DS-TA: Week Report`로 주간 Excel을 만든다.
-9. 수정이 필요할 때만 사유를 입력해 regrade한다.
-10. 모든 필수 주차가 해결된 뒤 `DS-TA: Final Report`를 실행한다.
+8. null 또는 manual-review가 있으면 `manual-review-report --week XX`로 검토 workbook을 만든다.
+9. 검토 workbook에 최종 주차 총점과 사유를 입력하고 `import-manual-review --week XX --dry-run`으로 검증한다.
+10. 검증된 결정을 실제 import한다. GitHub 증거를 다시 수집해야 할 때만 사유를 남겨 regrade한다.
+11. `DS-TA: Week Report`로 adjustment가 반영된 주간 Excel을 만든다.
+12. 모든 필수 주차가 해결된 뒤 `DS-TA: Final Report`를 실행한다.

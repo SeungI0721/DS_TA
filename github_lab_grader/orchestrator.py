@@ -6,11 +6,14 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from .c_checker import aggregate_component_results, check_c_submission
 from .grader import decide_grade
 from .github_client import GitHubApiError
 from .models import (
     CollaboratorCheckResult,
     CollaboratorStatus,
+    ComponentResult,
+    ComponentStatus,
     CommitHistoryResult,
     CourseConfig,
     GradeResult,
@@ -22,6 +25,7 @@ from .models import (
     RepositoryEventsResult,
     RepositoryMetadata,
     RepositoryPathsAtSha,
+    RepositorySourcesAtSha,
     RequiredPathGroupResult,
     ResolvedSectionDeadline,
     Student,
@@ -30,6 +34,7 @@ from .models import (
     SubmissionEvidenceType,
     SubmissionStatus,
     SubmissionTimestampType,
+    ScoringMode,
     WeeklyRubric,
 )
 from .readme_checker import check_readme_identity
@@ -65,6 +70,10 @@ class GitHubEvidenceClient(Protocol):
         self, repository: str, sha: str, paths: tuple[str, ...]
     ) -> RepositoryPathsAtSha: ...
 
+    def get_c_sources_at_sha(
+        self, repository: str, sha: str, project_paths: tuple[str, ...]
+    ) -> RepositorySourcesAtSha: ...
+
 
 class GradingOrchestrator:
     """명시적 client와 clock을 사용해 한 학생 또는 한 section/week를 채점한다."""
@@ -75,10 +84,12 @@ class GradingOrchestrator:
         course: CourseConfig,
         *,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        component_checker: Callable[..., ComponentResult] = check_c_submission,
     ) -> None:
         self.github = github
         self.course = course
         self.now = now
+        self.component_checker = component_checker
 
     def grade_student(
         self,
@@ -170,7 +181,50 @@ class GradingOrchestrator:
             enforce_submission_branch=rubric.grading.enforce_submission_branch,
         )
         if (
+            rubric.grading.scoring_mode is ScoringMode.COMPONENT_SUM
+            and submission.selected_sha is None
+            and SubmissionEvidenceType.COMMIT_HISTORY
+            in rubric.grading.submission_evidence_sources
+            and submission.status is not SubmissionStatus.AMBIGUOUS_SUBMISSION
+        ):
+            try:
+                history = self.github.list_repository_commits(
+                    student.repository, branch, timing.effective_deadline
+                )
+                candidates = sorted(
+                    (item for item in history.commits if item.committer_date <= timing.effective_deadline),
+                    key=lambda item: (item.committer_date, item.sha),
+                    reverse=True,
+                )
+                if candidates:
+                    commit = candidates[0]
+                    submission = SubmissionDecision(
+                        SubmissionStatus.ON_TIME,
+                        evidence_source=SubmissionEvidenceSource.COMMIT_HISTORY_CONFIRMED,
+                        selected_sha=commit.sha,
+                        selected_timestamp=commit.committer_date,
+                        timestamp_type=SubmissionTimestampType.COMMIT_COMMITTER_DATE,
+                    )
+                elif history.coverage_complete:
+                    has_late = any(
+                        item.committer_date > timing.effective_deadline
+                        for item in history.commits
+                    )
+                    submission = SubmissionDecision(
+                        SubmissionStatus.LATE if has_late else SubmissionStatus.NOT_SUBMITTED,
+                        reason="NO_TIMELY_SUBMISSION" if has_late else "EMPTY_REPOSITORY",
+                    )
+                else:
+                    submission = SubmissionDecision(
+                        SubmissionStatus.UNVERIFIABLE,
+                        evidence_complete=False,
+                        reason="commit history is insufficient",
+                    )
+            except (GitHubApiError, ValueError) as exc:
+                return self._api_failure(student, rubric, graded_at, timing, exc)
+        if (
             submission.selected_sha is None
+            and rubric.grading.scoring_mode is not ScoringMode.COMPONENT_SUM
             and SubmissionEvidenceType.COMMIT_HISTORY
             in rubric.grading.submission_evidence_sources
             and submission.status not in {SubmissionStatus.AMBIGUOUS_SUBMISSION}
@@ -275,6 +329,43 @@ class GradingOrchestrator:
             SubmissionStatus.ON_TIME,
             SubmissionStatus.EXTENDED_ON_TIME,
         }:
+            if rubric.grading.scoring_mode is ScoringMode.COMPONENT_SUM:
+                unresolved = submission.status not in {
+                    SubmissionStatus.LATE,
+                    SubmissionStatus.NOT_SUBMITTED,
+                }
+                components = tuple(
+                    ComponentResult(
+                        item.component_id,
+                        item.project_path,
+                        item.practice_number,
+                        ComponentStatus.UNVERIFIABLE if unresolved else ComponentStatus.FAIL,
+                        None if unresolved else 0.0,
+                        item.max_score,
+                        "HISTORICAL_EVIDENCE_UNAVAILABLE" if unresolved else (
+                            "LATE_SUBMISSION" if submission.status is SubmissionStatus.LATE else "PROJECT_MISSING"
+                        ),
+                        None,
+                        submission.evidence_source.value,
+                    )
+                    for item in rubric.components_by_section[student.section]
+                )
+                return self._result(
+                    student,
+                    rubric,
+                    graded_at,
+                    timing,
+                    submission,
+                    metadata=metadata,
+                    events=events,
+                    decision_status=(
+                        GradingStatus.MANUAL_REVIEW if unresolved else GradingStatus.FAIL
+                    ),
+                    score=None if unresolved else 0.0,
+                    manual_reason=(submission.reason if unresolved else None),
+                    evidence=base_evidence,
+                    component_results=components,
+                )
             decision = decide_grade(
                 submission.status,
                 CollaboratorStatus.UNKNOWN,
@@ -295,6 +386,76 @@ class GradingOrchestrator:
                 score=decision.score,
                 manual_reason=submission.reason or decision.manual_review_reason,
                 evidence=base_evidence,
+            )
+
+        if rubric.grading.scoring_mode is ScoringMode.COMPONENT_SUM:
+            selected_sha = submission.selected_sha
+            assert selected_sha is not None
+            definitions = rubric.components_by_section[student.section]
+            try:
+                source_result = self.github.get_c_sources_at_sha(
+                    student.repository,
+                    selected_sha,
+                    tuple(item.project_path for item in definitions),
+                )
+                by_path = {item.project_path: item for item in source_result.projects}
+                components = tuple(
+                    self.component_checker(
+                        item,
+                        by_path[item.project_path],
+                        historical_sha=selected_sha,
+                        evidence_source=submission.evidence_source.value,
+                    )
+                    for item in definitions
+                )
+            except (GitHubApiError, ValueError, KeyError):
+                components = tuple(
+                    ComponentResult(
+                        item.component_id,
+                        item.project_path,
+                        item.practice_number,
+                        ComponentStatus.UNVERIFIABLE,
+                        None,
+                        item.max_score,
+                        "SOURCE_UNREADABLE",
+                        selected_sha,
+                        submission.evidence_source.value,
+                    )
+                    for item in definitions
+                )
+            component_status, aggregated_score = aggregate_component_results(
+                components, rubric.max_score
+            )
+            if component_status is ComponentStatus.UNVERIFIABLE:
+                status, score, reason = (
+                    GradingStatus.MANUAL_REVIEW,
+                    None,
+                    "one or more components are unverifiable",
+                )
+            else:
+                score = aggregated_score
+                assert score is not None
+                status = (
+                    GradingStatus.PASS
+                    if abs(score - rubric.max_score) < 1e-9
+                    else GradingStatus.FAIL
+                    if score == 0
+                    else GradingStatus.PARTIAL
+                )
+                reason = None
+            return self._result(
+                student,
+                rubric,
+                graded_at,
+                timing,
+                submission,
+                metadata=metadata,
+                events=events,
+                decision_status=status,
+                score=score,
+                manual_reason=reason,
+                evidence=base_evidence,
+                component_results=components,
             )
 
         push_permission = metadata.permissions.get("push") if metadata.permissions else None
@@ -535,6 +696,7 @@ class GradingOrchestrator:
         evidence: dict[str, object] | None = None,
         path_checks: tuple[RequiredPathGroupResult, ...] = (),
         path_failure_reason: str | None = None,
+        component_results: tuple[ComponentResult, ...] = (),
     ) -> GradeResult:
         push = submission.selected_push
         return GradeResult(
@@ -593,4 +755,5 @@ class GradingOrchestrator:
             selected_submission_timestamp_type=submission.timestamp_type,
             required_path_checks=path_checks,
             required_path_failure_reason=path_failure_reason,
+            component_results=component_results,
         )

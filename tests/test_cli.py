@@ -73,6 +73,7 @@ def test_report_cli_never_initializes_github(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("main.load_global_config", lambda path: course)
     monkeypatch.setattr("main.load_students", lambda path, **kwargs: [])
     monkeypatch.setattr("main.load_weekly_rubric", lambda path: type("Rubric", (), {"week": 1})())
+    monkeypatch.setattr("main.load_manual_grade_adjustments", lambda *_args, **_kwargs: ())
     monkeypatch.setattr("main.RecordStore", Store)
     monkeypatch.setattr("main.ExcelReportWriter", Writer)
     monkeypatch.setattr("main.default_auth_provider", lambda: pytest.fail("reporting must not authenticate"))
@@ -84,3 +85,32 @@ def test_report_cli_scopes_are_explicit() -> None:
     assert parser.parse_args(["rebuild-gradebook"]).all_sections
     args = parser.parse_args(["week-report", "--week", "1"])
     assert args.section is None and not args.all_sections
+
+
+def test_manual_review_report_cli_uses_only_local_records(monkeypatch, tmp_path) -> None:
+    class Store:
+        def load(self, section, week):
+            return {"section": section, "week": week, "students": []}
+
+    class Writer:
+        def write(self, records, rubric):
+            assert [record["section"] for record in records] == ["01"]
+            return tmp_path / "output/manual_review/week02_manual_review.xlsx"
+
+    course = type("Course", (), {"sections": ("01",)})()
+    rubric = type("Rubric", (), {"week": 2})()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("main.load_global_config", lambda _path: course)
+    monkeypatch.setattr("main.load_students", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr("main.load_weekly_rubric", lambda _path: rubric)
+    monkeypatch.setattr("main.RecordStore", Store)
+    monkeypatch.setattr("main.ManualReviewWorkbook", Writer)
+    monkeypatch.setattr("main.default_auth_provider", lambda: pytest.fail("manual review report must not authenticate"))
+    assert main(["manual-review-report", "--week", "2"]) == 0
+
+
+def test_manual_review_cli_options_are_explicit() -> None:
+    parser = build_parser()
+    assert parser.parse_args(["manual-review-report", "--week", "2"]).week == 2
+    args = parser.parse_args(["import-manual-review", "--week", "2", "--dry-run"])
+    assert args.week == 2 and args.dry_run and args.file is None

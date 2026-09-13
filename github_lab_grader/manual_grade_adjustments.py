@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import csv
 import math
+import os
+import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -26,6 +28,48 @@ class ManualGradeAdjustment:
 
 
 _FIELDS = ("section", "week", "student_id", "score", "reason")
+
+
+def allowed_adjustment_scores(rubric: WeeklyRubric, section: str) -> tuple[float, ...]:
+    """Rubric의 기존 점수 규칙으로 허용 가능한 수동 확정 총점을 계산한다."""
+    allowed = {rubric.score_rules.full, rubric.score_rules.fail}
+    if rubric.grading.scoring_mode is ScoringMode.COMPONENT_SUM:
+        allowed = {0.0}
+        for component in rubric.components_by_section[section]:
+            allowed |= {value + component.max_score for value in tuple(allowed)}
+    elif rubric.grading.scoring_mode is not ScoringMode.BINARY:
+        allowed.add(rubric.score_rules.partial)
+    return tuple(sorted(allowed))
+
+
+def write_manual_grade_adjustments(
+    path: Path, adjustments: Iterable[ManualGradeAdjustment]
+) -> None:
+    """검증 완료된 adjustment 목록을 같은 directory에서 원자적으로 교체한다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8-sig", newline="", prefix=f".{path.name}.",
+            suffix=".tmp", dir=path.parent, delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            writer = csv.DictWriter(handle, fieldnames=_FIELDS, lineterminator="\n")
+            writer.writeheader()
+            for item in adjustments:
+                writer.writerow({
+                    "section": item.section, "week": item.week,
+                    "student_id": item.student_id, "score": item.score,
+                    "reason": item.reason,
+                })
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise ManualGradeAdjustmentError("manual adjustment CSV atomic write failed") from exc
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink(missing_ok=True)
 
 
 def load_manual_grade_adjustments(
@@ -64,9 +108,7 @@ def load_manual_grade_adjustments(
             raise ManualGradeAdjustmentError(f"manual adjustment row {index} has invalid week")
         if not math.isfinite(score) or not 0 <= score <= rubric.max_score:
             raise ManualGradeAdjustmentError(f"manual adjustment row {index} score is out of range")
-        allowed = {rubric.score_rules.full, rubric.score_rules.fail}
-        if rubric.grading.scoring_mode is not ScoringMode.BINARY:
-            allowed.add(rubric.score_rules.partial)
+        allowed = set(allowed_adjustment_scores(rubric, section))
         if score not in allowed:
             raise ManualGradeAdjustmentError(f"manual adjustment row {index} score is not allowed by rubric")
         if not reason:

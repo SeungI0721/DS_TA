@@ -19,6 +19,7 @@ from openpyxl.utils import get_column_letter
 from .gradebook import SectionGradebook, WeekReportStatus, natural_section_key
 from .models import WeeklyRubric
 from .record_store import validate_record
+from .display_labels import format_display_label
 
 _ILLEGAL_XML = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
@@ -82,7 +83,7 @@ def _criteria_sheet(workbook: Workbook, records: tuple[dict[str, Any], ...], rub
         ("README 필수", str(rubric.grading.readme_required), "선택된 제출 commit에서 확인"),
         ("학번 일치 필수", str(rubric.grading.student_id_required), "true이면 README에서 공식 학번 확인"),
         ("이름 일치 필수", str(rubric.grading.student_name_required), "true이면 README에서 Unicode NFC 이름 확인"),
-        ("채점 방식", rubric.grading.scoring_mode.value, "BINARY 또는 IDENTITY_PARTIAL"),
+        ("채점 방식", rubric.grading.scoring_mode.value, "rubric이 지정한 점수 계산 방식"),
         ("late window 사용", str(rubric.grading.use_late_window), "false이면 effective deadline이 채점 cutoff"),
         ("제출 시작 경계 적용", str(rubric.grading.enforce_submission_window_start), "false이면 deadline 이전 PushEvent에 하한을 적용하지 않음"),
         ("수동 검토/null 정책", "점수 셀 공란", "불확실성·오류를 0점으로 변환하지 않음"),
@@ -116,39 +117,75 @@ _WEEKLY_HEADERS = [
 
 def _weekly_section_sheet(workbook: Workbook, record: dict[str, Any]) -> None:
     sheet = workbook.create_sheet(safe_sheet_name(f"Section{record['section']}"))
-    sheet.append(_WEEKLY_HEADERS)
+    definitions = record.get("grading_policy", {}).get("components", [])
+    component_headers = [
+        value
+        for item in definitions
+        for value in (f"실습{item['practice_number']}", f"실습{item['practice_number']} 사유")
+    ]
+    headers = [*_WEEKLY_HEADERS[:4], *component_headers, *_WEEKLY_HEADERS[4:]]
+    sheet.append(headers)
     for student in record["students"]:
         checks = {
             check["name"]: check for check in student.get("required_path_checks", [])
         }
         root = checks.get("repository_root_readme", {})
         project = checks.get("week_project_readme", {})
+        component_results = {
+            item["component_id"]: item for item in student.get("component_results", [])
+        }
+        component_values = [
+            value
+            for definition in definitions
+            for value in (
+                component_results.get(definition["component_id"], {}).get("score"),
+                safe_excel_text(format_display_label(
+                    component_results.get(definition["component_id"], {}).get("reason")
+                )),
+            )
+        ]
         sheet.append([
             safe_excel_text(student["student_id"]), safe_excel_text(student["student_name"]), safe_excel_text(student["github_id"]), safe_excel_text(student["repository"]),
-            student.get("automatic_score", student["score"]), student.get("manual_adjustment_score"), student.get("effective_score", student["score"]), safe_excel_text(student.get("effective_grade_source", "AUTOMATIC")), safe_excel_text(student.get("manual_adjustment_reason")), student["max_score"], safe_excel_text(student["grading_status"]), safe_excel_text(student["submission_status"]),
-            safe_excel_text(student["professor_collaborator_status"]), safe_excel_text(student["assistant_collaborator_status"]), safe_excel_text(student["readme_status"]),
+            *component_values,
+            student.get("automatic_score", student["score"]), student.get("manual_adjustment_score"), student.get("effective_score", student["score"]), safe_excel_text(format_display_label(student.get("effective_grade_source", "AUTOMATIC"))), safe_excel_text(student.get("manual_adjustment_reason")), student["max_score"], safe_excel_text(format_display_label(student["grading_status"])), safe_excel_text(format_display_label(student["submission_status"])),
+            safe_excel_text(format_display_label(student["professor_collaborator_status"])), safe_excel_text(format_display_label(student["assistant_collaborator_status"])), safe_excel_text(format_display_label(student["readme_status"])),
             safe_excel_text(student["student_id_match"]), safe_excel_text(student["student_name_match"]), safe_excel_text(student.get("selected_submission_timestamp") or student.get("submission_push_created_at")),
-            safe_excel_text(student.get("selected_submission_sha") or student.get("submission_push_head_sha")), safe_excel_text(student.get("submission_evidence_source")), safe_excel_text(root.get("status")), safe_excel_text(project.get("status")), safe_excel_text(project.get("matched_path")), safe_excel_text(student.get("grade_resolution_source", "AUTOMATIC")), safe_excel_text(student.get("manual_override_reason")), safe_excel_text(student.get("manual_review_reason")), safe_excel_text(student.get("error_code")), record["record_revision"],
+            safe_excel_text(student.get("selected_submission_sha") or student.get("submission_push_head_sha")), safe_excel_text(format_display_label(student.get("submission_evidence_source"))), safe_excel_text(format_display_label(root.get("status"))), safe_excel_text(format_display_label(project.get("status"))), safe_excel_text(project.get("matched_path")), safe_excel_text(format_display_label(student.get("grade_resolution_source", "AUTOMATIC"))), safe_excel_text(student.get("manual_override_reason")), safe_excel_text(format_display_label(student.get("manual_review_reason"))), safe_excel_text(format_display_label(student.get("error_code"))), record["record_revision"],
         ])
-    _style_sheet(sheet, 1, 1 + len(record["students"]), len(_WEEKLY_HEADERS))
+    _style_sheet(sheet, 1, 1 + len(record["students"]), len(headers))
+    offset = len(component_headers)
     for row in range(2, 2 + len(record["students"])):
-        for column in (1, 3, 4, 19, 20, 23):
+        for column in (1, 3, 4, 19 + offset, 20 + offset, 23 + offset):
             sheet.cell(row, column).number_format = "@"
-        for column in (5, 6, 7, 10):
-            sheet.cell(row, column).number_format = "0.0"
+        for column in (*range(5, 5 + len(component_headers), 2), 5 + offset, 6 + offset, 7 + offset, 10 + offset):
+            sheet.cell(row, column).number_format = "0.00" if definitions else "0.0"
 
 
 def _weekly_summary_sheet(workbook: Workbook, records: tuple[dict[str, Any], ...]) -> None:
     sheet = workbook.create_sheet("요약")
-    headers = ["분반", "학생 수", "1.0", "0.5", "0.0", "수동 검토", "검증 불가", "오류", "미해결/null", "Record Revision"]
+    component_mode = all(
+        record.get("grading_policy", {}).get("scoring_mode") == "COMPONENT_SUM"
+        for record in records
+    )
+    score_labels = (1.0, 0.75, 0.5, 0.25, 0.0) if component_mode else (1.0, 0.5, 0.0)
+    score_headers = [f"{score:.2f}" if component_mode else str(score) for score in score_labels]
+    headers = ["분반", "학생 수", *score_headers, "수동 검토", "검증 불가", "오류", "미해결/null", "Record Revision"]
     sheet.append(headers)
     totals = Counter()
-    keys = ("total_students", "graded_1_0", "graded_0_5", "graded_0_0", "manual_review", "unverifiable", "errors", "ungraded_or_null")
     for record in records:
         summary = record["summary"]
-        values = {key: summary[key] for key in keys}
+        scores = [student.get("effective_score", student.get("score")) for student in record["students"]]
+        values = {
+            "total_students": len(scores),
+            **{f"score_{score:.2f}": scores.count(score) for score in score_labels},
+            "manual_review": summary["manual_review"],
+            "unverifiable": summary["unverifiable"],
+            "errors": summary["errors"],
+            "ungraded_or_null": scores.count(None),
+        }
         totals.update(values)
         sheet.append([safe_excel_text(record["section"]), *values.values(), record["record_revision"]])
+    keys = tuple(values)
     sheet.append(["전체", *[totals[key] for key in keys], None])
     _style_sheet(sheet, 1, sheet.max_row, len(headers))
     for row in range(2, sheet.max_row):
@@ -207,20 +244,20 @@ def _final_sheet(workbook: Workbook, title: str, gradebooks: tuple[SectionGradeb
         if include_section:
             sheet.cell(row, 1).number_format = "@"
         for column in range(id_col + 3, id_col + 3 + len(expected_weeks)):
-            sheet.cell(row, column).number_format = "0.0"
+            sheet.cell(row, column).number_format = "0.00"
         sheet.cell(row, final_col).number_format = "0.00"
 
 
 def _weekly_status_sheet(workbook: Workbook, gradebooks: tuple[SectionGradebook, ...]) -> None:
     sheet = workbook.create_sheet("주차별현황")
-    headers = ["주차", "분반", "학생 수", "1.0", "0.5", "0.0", "확인 필요", "오류", "Canonical Record Revision", "보고서 생성 상태"]
+    headers = ["주차", "분반", "학생 수", "1.0", "0.75", "0.5", "0.25", "0.0", "확인 필요", "오류", "Canonical Record Revision", "보고서 생성 상태"]
     sheet.append(headers)
     for book in gradebooks:
         for index, week in enumerate(book.expected_weeks):
             values = [row.weeks[index] for row in book.rows]
             scores = [item.score for item in values]
             revisions = sorted({item.record_revision for item in values if item.record_revision is not None})
-            sheet.append([week, safe_excel_text(book.section), len(values), scores.count(1.0), scores.count(0.5), scores.count(0.0),
+            sheet.append([week, safe_excel_text(book.section), len(values), scores.count(1.0), scores.count(0.75), scores.count(0.5), scores.count(0.25), scores.count(0.0),
                           sum(item.report_status is WeekReportStatus.MANUAL_REVIEW for item in values),
                           sum(item.report_status is WeekReportStatus.ERROR for item in values),
                           ",".join(map(str, revisions)) or None,

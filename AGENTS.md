@@ -615,15 +615,15 @@ Canonical record는 자동 채점 결과의 authoritative source다. 승인된 p
 records/section01/week01.json
 ```
 
-Excel은 canonical record를 읽어 생성하는 파생 artifact다.
+일반 성적 Excel은 canonical record와 승인된 private adjustment를 읽어 생성하는 파생 artifact다. 수동 검토 workbook은 승인 결정을 입력하는 UI이며 import 결과는 canonical이 아니라 private adjustment CSV에 저장한다.
 
-절대:
+일반 성적 workbook에 대해서는 절대:
 
 ```text
 Excel → canonical record
 ```
 
-역방향 import를 만들지 않는다.
+역방향 import를 만들지 않는다. `manual-review-report`로 생성한 전용 workbook에서 검증된 결정을 `data/manual_grade_adjustments.csv`로 가져오는 workflow는 이 금지에 해당하지 않는다.
 
 ---
 
@@ -675,10 +675,10 @@ Archive 실패 시 기존 canonical을 유지한다.
 
 # 20. Excel
 
-Excel은:
+일반 성적 Excel은:
 
 ```text
-canonical records
+canonical records + private manual adjustments
 → gradebook
 → XLSX
 ```
@@ -696,6 +696,12 @@ output/
    ├─ week02_results.xlsx
    ├─ ...
    └─ final_practical_grade.xlsx
+```
+
+수동 검토 workbook:
+
+```text
+output/manual_review/weekXX_manual_review.xlsx
 ```
 
 주차 workbook:
@@ -885,7 +891,10 @@ Pre-commit review 요청에서는:
 5. 필요하면 --details 표본 검증
 6. 실제 Grade
 7. canonical record 확인
-8. Weekly Excel 생성
+8. null/manual-review가 있으면 전용 manual-review workbook 생성
+9. 승인 점수와 사유 입력 후 import --dry-run
+10. 검증된 결정을 private adjustment CSV로 import
+11. Weekly Excel 생성
 ```
 
 명령 예:
@@ -906,6 +915,14 @@ Weekly Excel:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py week-report --week 1
+```
+
+Manual review가 필요한 경우:
+
+```powershell
+.\.venv\Scripts\python.exe main.py manual-review-report --week 2
+.\.venv\Scripts\python.exe main.py import-manual-review --week 2 --dry-run
+.\.venv\Scripts\python.exe main.py import-manual-review --week 2
 ```
 
 Final Excel:
@@ -1254,7 +1271,7 @@ GradeResult 또는 canonical schema에 필드를 추가할 때는 반드시 확�
 
 Production canonical record가 이미 존재하는 경우 schema 변경은 매우 신중하게 한다.
 
-현재 실제 Week 1 record가 아직 생성되지 않았다면 migration 요구는 낮지만, generic schema compatibility는 유지한다.
+실제 production canonical record가 이미 존재할 수 있으므로 기존 schema compatibility를 유지한다.
 
 Schema version을 조용히 변경하지 않는다.
 
@@ -1373,8 +1390,11 @@ private manual grade adjustment
 ```
 
 ```text
-Excel
+일반 성적 Excel
 = derived report
+
+manual-review Excel
+= private adjustment 입력 UI
 ```
 
 ```text
@@ -1388,7 +1408,6 @@ dry-run first
 ```
 
 학생 성적을 결정하는 시스템이므로 false negative를 줄이기 위해 보수적으로 판단하되, 실제 rubric에서 명시적으로 허용한 evidence는 빠뜨리지 않는다.
-```
 
 이 `AGENTS.md`의 가장 중요한 부분은 사실 마지막에 있는 이 세 규칙입니다.
 
@@ -1398,3 +1417,4 @@ dry-run first
 rubric > hidden implementation default
 
 PushEvent absence ≠ automatic NOT_SUBMITTED
+```

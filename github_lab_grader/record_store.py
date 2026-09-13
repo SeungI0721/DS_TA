@@ -15,6 +15,7 @@ from typing import Any
 
 from .models import (
     CollaboratorStatus,
+    ComponentStatus,
     CourseConfig,
     GradeResult,
     GradeResolutionSource,
@@ -134,6 +135,20 @@ def _student(result: GradeResult) -> dict[str, Any]:
         "automatic_grading_status_before_override": result.automatic_grading_status_before_override.value if result.automatic_grading_status_before_override else None,
         "automatic_submission_status_before_override": result.automatic_submission_status_before_override.value if result.automatic_submission_status_before_override else None,
         "automatic_reason_before_override": result.automatic_reason_before_override,
+        "component_results": [
+            {
+                "component_id": item.component_id,
+                "project_path": item.project_path,
+                "practice_number": item.practice_number,
+                "status": item.status.value,
+                "score": item.score,
+                "max_score": item.max_score,
+                "reason": item.reason,
+                "historical_sha": item.historical_sha,
+                "evidence_source": item.evidence_source,
+            }
+            for item in result.component_results
+        ],
         "professor_collaborator_status": result.professor_collaborator.value,
         "assistant_collaborator_status": result.assistant_collaborator.value,
         "professor_collaborator_checked_at": _iso(result.professor_collaborator_checked_at, "professor_collaborator_checked_at") if result.professor_collaborator_checked_at else None,
@@ -213,7 +228,7 @@ def build_canonical_record(course: CourseConfig, rubric: WeeklyRubric, section: 
             "deadline_note": resolved.deadline_note if resolved else timing.deadline_note,
             "submission_branch": rubric.submission_branch,
         },
-        "grading_policy": {"max_score": rubric.max_score, "score_rules": {"full": rubric.score_rules.full, "partial": rubric.score_rules.partial, "fail": rubric.score_rules.fail}, "require_student_push_actor": rubric.require_student_push_actor, "scoring_mode": rubric.grading.scoring_mode.value, "require_timely_push": rubric.grading.require_timely_push, "require_root_readme": rubric.grading.readme_required, "required_collaborators": [role for role, required in (("professor", rubric.grading.professor_collaborator_required), ("assistant", rubric.grading.assistant_collaborator_required)) if required], "require_readme_identity": rubric.grading.student_id_required or rubric.grading.student_name_required, "use_late_window": rubric.grading.use_late_window, "enforce_submission_window_start": rubric.grading.enforce_submission_window_start, "enforce_submission_branch": rubric.grading.enforce_submission_branch, "submission_evidence_sources": [source.value for source in rubric.grading.submission_evidence_sources], "required_path_groups": [{"name": group.name, "match": group.match.value, "paths": list(group.paths), "failure_reason": group.failure_reason} for group in rubric.grading.required_path_groups]},
+        "grading_policy": {"max_score": rubric.max_score, "score_rules": {"full": rubric.score_rules.full, "partial": rubric.score_rules.partial, "fail": rubric.score_rules.fail}, "require_student_push_actor": rubric.require_student_push_actor, "scoring_mode": rubric.grading.scoring_mode.value, "deadline_resolution": rubric.deadline_resolution.value, "require_timely_push": rubric.grading.require_timely_push, "require_root_readme": rubric.grading.readme_required, "required_collaborators": [role for role, required in (("professor", rubric.grading.professor_collaborator_required), ("assistant", rubric.grading.assistant_collaborator_required)) if required], "require_readme_identity": rubric.grading.student_id_required or rubric.grading.student_name_required, "use_late_window": rubric.grading.use_late_window, "enforce_submission_window_start": rubric.grading.enforce_submission_window_start, "enforce_submission_branch": rubric.grading.enforce_submission_branch, "submission_evidence_sources": [source.value for source in rubric.grading.submission_evidence_sources], "required_path_groups": [{"name": group.name, "match": group.match.value, "paths": list(group.paths), "failure_reason": group.failure_reason} for group in rubric.grading.required_path_groups], "components": [{"component_id": item.component_id, "project_path": item.project_path, "practice_number": item.practice_number, "max_score": item.max_score, "checker": item.checker.value} for item in rubric.components_by_section.get(section, ())]},
         "summary": _summary(students), "students": students,
     }
     return validate_record(record)
@@ -271,6 +286,31 @@ def _validate_student(student: object, index: int) -> None:
             PathGroupStatus(check.get("status"))
         except (ValueError, TypeError) as exc:
             raise CorruptedRecordError(f"student result {index} has invalid path checks") from exc
+    components = student.get("component_results", [])
+    if not isinstance(components, list):
+        raise CorruptedRecordError(f"student result {index} has invalid component results")
+    component_scores: list[float | None] = []
+    for component in components:
+        try:
+            if not isinstance(component, dict):
+                raise TypeError
+            status_value = ComponentStatus(component.get("status"))
+            component_score = component.get("score")
+            component_max = component.get("max_score")
+            if not isinstance(component_max, (int, float)) or component_max <= 0:
+                raise TypeError
+            if status_value is ComponentStatus.UNVERIFIABLE:
+                if component_score is not None:
+                    raise TypeError
+            elif not isinstance(component_score, (int, float)) or not 0 <= component_score <= component_max:
+                raise TypeError
+            elif status_value is ComponentStatus.PASS and component_score != component_max:
+                raise TypeError
+            elif status_value is ComponentStatus.FAIL and component_score != 0:
+                raise TypeError
+            component_scores.append(component_score)
+        except (ValueError, TypeError) as exc:
+            raise CorruptedRecordError(f"student result {index} has invalid component results") from exc
     for field in ("professor_collaborator_checked_at", "assistant_collaborator_checked_at"):
         if student.get(field) is not None:
             _time(student[field], f"students[{index}].{field}")
@@ -283,6 +323,13 @@ def _validate_student(student: object, index: int) -> None:
             if coverage.get(field) is not None:
                 _time(coverage[field], f"students[{index}].event_coverage.{field}")
     score, maximum = student["score"], student["max_score"]
+    if component_scores:
+        expected_score = (
+            None if any(value is None for value in component_scores)
+            else sum(value for value in component_scores if value is not None)
+        )
+        if score != expected_score:
+            raise CorruptedRecordError(f"student result {index} component total is inconsistent")
     if isinstance(maximum, bool) or not isinstance(maximum, (int, float)) or maximum <= 0:
         raise CorruptedRecordError(f"student result {index} has invalid max_score")
     if score is None and status not in {GradingStatus.MANUAL_REVIEW, GradingStatus.ERROR}:

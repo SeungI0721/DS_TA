@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "week": 2,
+  "title": "Arrays and Pointer Operations",
+  "max_score": 1.0,
+  "deadline_resolution": "MINUTE",
+  "submission_branch": "default",
+  "require_student_push_actor": true,
+  "sections": {
+    "01": {
+      "submission_window_start": "2026-09-01T00:00:00+09:00",
+      "scheduled_deadline": "2026-09-09T23:59:00+09:00",
+      "effective_deadline": "2026-09-09T23:59:00+09:00",
+      "late_window_end": null,
+      "deadline_note": "공식 마감은 2026-09-09 23:59 KST이며 MINUTE 단위로 비교합니다."
+    },
+    "02": {
+      "submission_window_start": "2026-09-01T00:00:00+09:00",
+      "scheduled_deadline": "2026-09-09T23:59:00+09:00",
+      "effective_deadline": "2026-09-09T23:59:00+09:00",
+      "late_window_end": null,
+      "deadline_note": "공식 마감은 2026-09-09 23:59 KST이며 MINUTE 단위로 비교합니다."
+    }
+  },
+  "grading": {
+    "professor_collaborator_required": false,
+    "assistant_collaborator_required": false,
+    "readme_required": false,
+    "student_id_required": false,
+    "student_name_required": false,
+    "scoring_mode": "COMPONENT_SUM",
+    "require_timely_push": true,
+    "use_late_window": false,
+    "enforce_submission_window_start": false,
+    "enforce_submission_branch": false,
+    "submission_evidence_sources": ["PUSH_EVENT", "COMMIT_HISTORY"],
+    "required_operator_confirmations": [],
+    "required_path_groups": []
+  },
+  "score_rules": {
+    "full": 1.0,
+    "partial": 0.25,
+    "fail": 0.0
+  },
+  "components_by_section": {
+    "01": [
+      {"component_id": "practice1", "project_path": "week02-01", "practice_number": 1, "max_score": 0.25, "checker": "MAX_VALUE"},
+      {"component_id": "practice3", "project_path": "week02-02", "practice_number": 3, "max_score": 0.25, "checker": "NEGATIVE_COUNT"},
+      {"component_id": "practice5", "project_path": "week02-03", "practice_number": 5, "max_score": 0.25, "checker": "MAX_INDEX_FIRST"},
+      {"component_id": "practice7", "project_path": "week02-04", "practice_number": 7, "max_score": 0.25, "checker": "ARRAY_COMPARE_MAE"}
+    ],
+    "02": [
+      {"component_id": "practice2", "project_path": "week02-01", "practice_number": 2, "max_score": 0.25, "checker": "MIN_VALUE"},
+      {"component_id": "practice4", "project_path": "week02-02", "practice_number": 4, "max_score": 0.25, "checker": "POSITIVE_SUM_AVERAGE"},
+      {"component_id": "practice6", "project_path": "week02-03", "practice_number": 6, "max_score": 0.25, "checker": "MIN_INDEX_FIRST"},
+      {"component_id": "practice7", "project_path": "week02-04", "practice_number": 7, "max_score": 0.25, "checker": "ARRAY_COMPARE_MAE"}
+    ]
+  }
+}

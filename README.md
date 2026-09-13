@@ -2,7 +2,7 @@
 
 Data Structures 실습 과목의 GitHub 제출 증거를 수집하고 주차별 채점 결과를 보존하기 위한 Windows용 Python CLI 프로젝트이다.
 
-현재 저장소는 **Phase 6 gradebook reconstruction과 Excel reporting**까지 구현되어 있다. 검증된 canonical JSON만으로 주차별 통합 workbook과 전체 분반 최종 workbook을 재생성한다. 보고 과정은 GitHub 인증·API·network를 사용하지 않으며 C 실행은 아직 구현하지 않았다.
+현재 저장소는 GitHub evidence 기반 자동 채점, canonical record, Week 2 C component 검사, Excel reporting과 수동 검토 workbook workflow를 구현한다. 보고서와 수동 검토 workbook은 local canonical record와 검증된 local 설정만으로 생성하며 GitHub 인증·API·network를 사용하지 않는다.
 
 ## 프로젝트 목적
 
@@ -17,8 +17,9 @@ Version 1의 최종 범위는 다음 항목이다.
 - 주차별 점수 계산과 불변 JSON 증거 보존
 - 분반별 주차 결과와 누적 Excel 성적표 생성
 - private manual adjustment 기반의 effective grade 보고
+- Week 2의 네 component C 실습 content 판정과 합산
 
-C 소스 검사와 학생 프로그램 실행은 Version 1 범위가 아니다.
+Week 2 C source 검사는 명시된 component rubric에 한해 지원하며, 다른 주차에는 자동 적용하지 않는다.
 
 ## 현재 구현 상태
 
@@ -39,7 +40,9 @@ C 소스 검사와 학생 프로그램 실행은 Version 1 범위가 아니다.
 | 기술적 불확실성의 null/manual-review 보존 | 구현, unit test 검증 |
 | 불변 JSON 기록과 regrade archive | 구현, local unit/integration test 검증 |
 | Excel 보고서와 누적 성적표 | 구현, fictional XLSX reopen test 검증 |
-| Week 1 최종 rubric 구현 | offline 검증 완료, 운영 확인 대기 |
+| Week 1 최종 rubric과 운영 workflow | 구현 및 운영 검증 완료 |
+| Week 2 C component 채점 | 구현 및 운영 검증 완료 |
+| 수동 검토 workbook과 adjustment import | 구현, offline round-trip test 검증 |
 
 `grade`는 GitHub evidence를 canonical record로 저장한다. `week-report`, `rebuild-gradebook`, `final-report`는 canonical/local 입력만 읽어 Excel을 만들며 GitHub를 다시 호출하지 않는다. Human-approved 예외 점수는 ignored `data/manual_grade_adjustments.csv`에서만 관리하며 canonical JSON을 수정하지 않는다.
 
@@ -58,7 +61,12 @@ DS-TA/
 ├─ data/
 │  └─ students.example.csv
 ├─ rubrics/
-│  └─ week01.json
+│  ├─ week01.json
+│  └─ week02.json
+├─ docs/
+│  ├─ USAGE.md
+│  ├─ WEEK1_USAGE.md
+│  └─ WEEK2_USAGE.md
 ├─ github_lab_grader/
 │  ├─ __init__.py
 │  ├─ auth.py
@@ -74,7 +82,9 @@ DS-TA/
 │  ├─ record_store.py
 │  ├─ excel_report.py
 │  ├─ gradebook.py
-│  └─ c_checker.py
+│  ├─ c_checker.py
+│  ├─ display_labels.py
+│  └─ manual_review.py
 └─ tests/
    ├─ conftest.py
    ├─ test_auth.py
@@ -92,6 +102,9 @@ DS-TA/
    ├─ phase6_helpers.py
    ├─ test_gradebook.py
    ├─ test_excel_report.py
+   ├─ test_display_labels.py
+   ├─ test_manual_review.py
+   ├─ test_week02.py
    └─ test_record_and_gradebook_scaffold.py
 ```
 
@@ -104,9 +117,12 @@ DS-TA/
 | `github_lab_grader/orchestrator.py` | 학생별 evidence acquisition과 section/week 격리 실행 |
 | `config.example.json` | 실제 계정이 없는 공개 설정 template |
 | `config.json` | 실제 수업 계정을 둘 수 있는 ignored local runtime 설정 |
-| `github_lab_grader/c_checker.py` | 실행 기능이 없는 향후 C 채점 placeholder |
+| `github_lab_grader/c_checker.py` | Week 2 C component oracle와 제한 실행 판정 |
 | `data/students.example.csv` | 공개 가능한 가상 학생 데이터 형식 |
 | `rubrics/week01.json` | 검증 대상 Week 1 채점 정책 |
+| `rubrics/week02.json` | 검증 대상 Week 2 component 채점 정책 |
+| `github_lab_grader/display_labels.py` | 내부 판정 코드의 한국어 표시 계층 |
+| `github_lab_grader/manual_review.py` | 미확정 결과 workbook 생성과 adjustment import |
 | `tests/` | 현재 기반 검증과 이후 Phase 동작 명세 |
 
 `config.json`, `records/`, `output/`, `archive/`, `data/students.csv`, `data/manual_grade_adjustments.csv`는 실제 계정·개인정보·성적 자료를 포함할 수 있으므로 저장소에 추적하지 않는다.
@@ -139,7 +155,7 @@ Preflight → Dry Run → 실제 채점 → canonical JSON → 주간/최종 Exc
 
 `grade --dry-run`은 점수별 집계, null 원인, 제출 상태와 마감 settle 상태를 출력한다. 필요한 경우에만 `--details`를 추가해 미해결 학생의 최소 식별자와 상태를 확인한다.
 
-채점 방식, 제출 시작 경계, 필수 collaborator, historical SHA의 필수 경로 그룹, README identity 요구, late-window 사용 여부는 주차별 rubric에서 결정한다. Deadline-only rubric은 시작 경계를 적용하지 않고, bounded-window rubric은 설정된 시작 시각 이후의 제출만 사용한다. Week 1의 구체적인 정책은 [Week 1 사용 가이드](docs/WEEK1_USAGE.md)에만 유지하며 이후 주차의 보편 규칙으로 간주하지 않는다.
+채점 방식, 제출 시작 경계, 필수 collaborator, historical SHA의 필수 경로 그룹, README identity 요구, late-window 사용 여부는 주차별 rubric에서 결정한다. Deadline-only rubric은 시작 경계를 적용하지 않고, bounded-window rubric은 설정된 시작 시각 이후의 제출만 사용한다. Week 1 정책은 [Week 1 사용 가이드](docs/WEEK1_USAGE.md), component 기반 Week 2 정책은 [Week 2 사용 가이드](docs/WEEK2_USAGE.md)에 유지한다.
 
 명령은 저장소 루트에서 Windows PowerShell로 실행한다.
 
@@ -158,7 +174,7 @@ PowerShell 실행 정책 때문에 activate script를 사용할 수 없다면 �
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-CLI 인자 구조 확인 예시는 다음과 같다. 실제 채점은 아직 동작하지 않는다.
+CLI 인자 구조와 실제 채점 명령 예시는 다음과 같다. 실제 채점 전에는 반드시 preflight와 dry-run 결과를 검토한다.
 
 ```powershell
 python main.py --help
@@ -252,7 +268,7 @@ GitHub REST 요청은 `config.json`의 `github_api_version`과 `github_request` 
 
 기술적 불확실성을 0점으로 자동 변환하지 않는다. Identity나 partial score는 이를 활성화한 rubric에만 적용한다.
 
-## Phase 4 orchestration
+## 채점 orchestration
 
 `GradingOrchestrator.grade_student()`는 다음 순서를 사용한다.
 
@@ -319,9 +335,10 @@ output/excel/week01_results.xlsx
 output/excel/week02_results.xlsx
 output/excel/...
 output/excel/final_practical_grade.xlsx
+output/manual_review/week02_manual_review.xlsx
 ```
 
-JSON 기록이 canonical evidence이며 Excel은 JSON에서만 만드는 파생 보고서다. Excel을 삭제하거나 수정해도 canonical grade는 바뀌지 않으며 같은 records에서 다시 생성할 수 있다. 첫 record 저장은 revision 1이며 기존 기록은 기본적으로 `RECORD_ALREADY_EXISTS`로 거부한다. 명시적 `--regrade`에서만 이전 record를 archive한 뒤 새 revision을 설치한다.
+JSON 기록이 canonical automatic evidence다. 일반 성적 Excel은 canonical record와 승인된 private adjustment를 결합해 만드는 파생 보고서다. 수동 검토 Excel만 승인 입력 UI로 사용하며 import 결과는 canonical이 아니라 private `data/manual_grade_adjustments.csv`에 저장한다. 첫 record 저장은 revision 1이며 기존 기록은 기본적으로 `RECORD_ALREADY_EXISTS`로 거부한다. 명시적 `--regrade`에서만 이전 record를 archive한 뒤 새 revision을 설치한다.
 
 record에는 과정·분반·주차·run UUID·revision·timezone-aware 시각, timing/grading policy, 학생별 정규화된 제출·collaborator·README·coverage 증거와 파생 summary가 들어간다. token, 전체 GitHub Events 응답, README 본문은 저장하지 않는다. `0.0`과 `null`은 서로 다른 값으로 보존하며 aggregate에서도 `null`을 0점으로 간주하지 않는다.
 
@@ -333,11 +350,14 @@ python main.py grade --week 1 --section 01 --dry-run
 
 `--dry-run`은 GitHub 채점을 수행해 간결한 summary만 표시하고 `records/`나 `archive/`에 쓰지 않는다. `RecordStore.list_records()`와 `load()`는 schema와 상태 일관성을 검증하여 Phase 6가 GitHub를 다시 호출하지 않고 최신 canonical records를 재구성하게 한다.
 
-### Phase 6 보고서
+### 보고서와 수동 검토
 
 ```powershell
 python main.py week-report --week 1 --section 01
 python main.py week-report --week 1 --all-sections
+python main.py manual-review-report --week 2
+python main.py import-manual-review --week 2 --dry-run
+python main.py import-manual-review --week 2
 python main.py rebuild-gradebook
 python main.py final-report
 ```
@@ -345,6 +365,10 @@ python main.py final-report
 기본 `week-report`는 설정된 모든 분반을 하나의 `output/excel/weekXX_results.xlsx`에 담는다. `--section`은 필요한 경우 한 분반만 포함하는 선택 필터이며 별도 중복 파일을 만들지 않는다. 주간 workbook은 `채점기준`, 동적으로 생성되는 `SectionXX`, `요약` sheet로 구성되어 채점 기준·분반별 상세 결과·canonical 집계를 함께 보여 준다.
 
 `final-report`는 `output/excel/final_practical_grade.xlsx`를 만든다. 설정된 각 `SectionXX`와 `전체`, `주차별현황` sheet를 동적으로 생성하며 상세 GitHub 증거를 중복하지 않는다. canonical JSON은 자동 채점 결과의 원본이고, 승인된 private `data/manual_grade_adjustments.csv`가 있으면 보고서는 이를 결합한 effective grade를 사용한다. Excel 파일은 언제든 재생성 가능한 파생 보고서다. `output/excel/`은 실제 성적 정보를 포함하므로 계속 Git에서 무시하며 추적하지 않는다.
+
+`manual-review-report --week XX`는 canonical record에서 `score = null`인 학생과 `UNVERIFIABLE` component만 골라 `output/manual_review/weekXX_manual_review.xlsx`를 만든다. TA는 노란색 `수동확정 점수`와 `수동조정 사유`만 입력한다. 이 점수는 표시된 component의 부분점수가 아니라 해당 학생의 최종 주차 총점이다.
+
+`import-manual-review --week XX --dry-run`으로 먼저 검증한 뒤 실제 import를 실행한다. 빈 점수는 미결 상태로 남고, 허용되지 않은 점수, 빈 사유, formula 입력, 변조된 식별자, 중복 결정 및 기존 adjustment와 다른 결정은 거부된다. Excel은 입력 UI이고 승인 결과의 원본은 private `data/manual_grade_adjustments.csv`다. Canonical 자동 채점 결과는 수정하지 않으며, 기존 `week-report`와 `final-report`가 import된 adjustment를 그대로 반영한다.
 
 canonical `1.0`, `0.5`, `0.0`은 Excel numeric cell로 유지한다. `null`, record가 없는 주차와 미래 주차는 blank score로 유지하고 `MANUAL_REVIEW`, `ERROR`, `RECORD_MISSING`, `FUTURE_WEEK` 등의 text status로 구분한다. 실제 `0.0`만 해결된 0점이다.
 
@@ -356,19 +380,19 @@ canonical `1.0`, `0.5`, `0.0`은 Excel numeric cell로 유지한다. `null`, rec
 
 ## 테스트 및 검증
 
-2026-09-07 Phase 6 점검 기준:
+현재 commit 전 점검 기준:
 
-- offline pytest 결과: 235 passed, 1 skipped, 0 failed
+- offline pytest 결과: 373 passed, 1 skipped, 0 failed
 - 개발자 소유 공개 repository 대상 read-only live pytest 결과: 1 passed, 125 deselected, 0 failed
-- pytest 기반 Phase 2/3 regression과 Phase 4 pure/orchestration test 실행
+- 전체 offline regression과 orchestration, Week 2 checker, 수동 검토 import test 실행
 - 인증, HTTP status, timeout, retry, pagination, PushEvent, collaborator, README-at-SHA를 fake HTTP response로 검증
 - 제출 경계, actor/ref filtering, same-second ambiguity, Events coverage, settle delay, score matrix, section 격리를 offline 검증
-- fictional Student와 synthetic 과거 window를 사용한 read-only Phase 4 live orchestration에서 structured `GradeResult` 생성 확인
+- fictional Student와 synthetic 과거 window를 사용한 read-only live orchestration에서 structured `GradeResult` 생성 확인
 - live test에서 GitHub CLI 인증, repository metadata·permissions, Events API, rate-limit header, root contents, README UTF-8 decoding, 명시적 commit SHA 조회, 현재 owner collaborator 상태 검증
 - 선택한 live repository에는 최근 PushEvent가 없어 live PushEvent normalization은 수행하지 않았으며 offline test로만 검증
 - Python syntax/import validation 실행
-- Phase 5 persistence와 regrade 실패 경계를 isolated temporary directory에서 검증
-- canonical-only reconstruction, Excel typing/security, atomic output과 offline report 경계를 검증
+- persistence와 regrade 실패 경계를 isolated temporary directory에서 검증
+- canonical/local-only reconstruction, Excel typing/security, atomic output과 offline report 경계를 검증
 - 실제 학생 저장소 검증은 수행하지 않음
 
 skip된 테스트를 통과한 기능으로 해석해서는 안 된다.
@@ -388,7 +412,7 @@ $env:GITHUB_LIVE_REPOSITORY='owner/repository'
 .\.venv\Scripts\python.exe -m pytest -m live -q -p no:cacheprovider
 ```
 
-인증 또는 opt-in 변수가 없으면 live test는 안전하게 skip된다. 위 live 결과는 개발자 소유 repository에서 일회성 process environment를 사용해 확인한 smoke test이며 모든 환경이나 Phase 4 채점 orchestration의 동작을 보장하지 않는다.
+인증 또는 opt-in 변수가 없으면 live test는 안전하게 skip된다. 위 live 결과는 개발자 소유 repository에서 일회성 process environment를 사용해 확인한 smoke test이며 모든 환경의 채점 orchestration 동작을 보장하지 않는다.
 
 ## 개인정보 및 보안
 
@@ -428,10 +452,10 @@ $env:GITHUB_LIVE_REPOSITORY='owner/repository'
 
 ## 향후 확장
 
-향후에는 C source grading, 추가 rubric 유형과 운영 backup/export 절차를 별도 단계에서 다룬다. Excel을 canonical JSON으로 다시 가져오는 경로는 추가하지 않는다.
+향후 추가 rubric 유형과 운영 backup/export 절차는 별도 단계에서 다룬다. 일반 성적 Excel을 canonical JSON으로 가져오는 경로는 제공하지 않는다.
 
-`c_checker.py`는 현재 항상 `NotImplementedError`를 발생시키는 안전한 placeholder이며 학생 코드를 실행하지 않는다.
+`c_checker.py`는 `COMPONENT_SUM` rubric에만 연결된다. 지원 compiler가 없거나 실행 결과를 신뢰할 수 없으면 학생 실패로 추정하지 않고 `UNVERIFIABLE`로 남긴다.
 
-향후 C 채점은 `.c`, `.h`, `.sln`, `.vcxproj` 파일 확인, GCC/MSBuild compile, stdin/stdout test, timeout과 partial score를 지원할 수 있다. 모든 확인 대상은 repository 최신 상태가 아니라 `submission_push_head_sha`에서 가져와야 한다.
+현재 Week 2 checker는 selected historical SHA의 `.c` 파일, 지원 C compiler, 제한 시간, 제한된 출력과 독립 oracle을 사용한다. `.h`, `.sln`, `.vcxproj` 전용 해석과 일반 목적 C 과제 채점은 현재 지원 범위가 아니다.
 
-학생 프로그램은 신뢰할 수 없는 코드이므로 향후 실행 기능에는 격리, timeout, 임시 작업 폴더, resource 제한, stdout/stderr capture, grader credential 차단이 필요하다.
+학생 프로그램은 신뢰할 수 없는 코드다. 현재 구현은 임시 작업 폴더, timeout, 출력 제한과 최소 실행 환경을 사용하지만 OS 수준 sandbox나 완전한 network/resource 격리를 제공하지 않는다. 신뢰 경계를 더 강화해야 하는 환경에서는 별도 sandbox가 필요하다.

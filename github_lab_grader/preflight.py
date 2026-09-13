@@ -8,6 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from .auth import AuthProvider
+from .c_checker import probe_available_c_compiler
 from .config_loader import ConfigurationError, load_global_config, load_students, load_weekly_rubric
 from .github_client import GitHubClientSettings
 from .manual_overrides import ManualOverrideError, load_manual_overrides
@@ -183,6 +184,16 @@ def run_preflight(
                     items.append(PreflightItem(PreflightSeverity.INFO, "EFFECTIVE_DEADLINE", f"effective deadline: {timing.effective_deadline.isoformat()}"))
                     items.append(PreflightItem(PreflightSeverity.INFO, "DEADLINE_NOTE", timing.deadline_note))
                     items.append(PreflightItem(PreflightSeverity.INFO, "SCORING_MODE", f"scoring mode: {rubric.grading.scoring_mode.value}"))
+                    items.append(PreflightItem(PreflightSeverity.INFO, "DEADLINE_RESOLUTION", f"deadline comparison resolution: {rubric.deadline_resolution.value}"))
+                    if rubric.components_by_section:
+                        components = rubric.components_by_section[section]
+                        items.append(PreflightItem(PreflightSeverity.INFO, "GRADING_COMPONENTS", f"grading components: {len(components)}, total={sum(item.max_score for item in components):.2f}"))
+                        compiler_probe = probe_available_c_compiler()
+                        if compiler_probe.available:
+                            compiler = compiler_probe.compiler
+                            items.append(PreflightItem(PreflightSeverity.INFO, "C_TOOLCHAIN_AVAILABLE", f"C toolchain: {compiler.kind.value}; {compiler_probe.identity}"))
+                        else:
+                            items.append(PreflightItem(PreflightSeverity.BLOCKER, "C_TOOLCHAIN_UNAVAILABLE", "usable C compiler/runtime is unavailable; component content cannot be verified"))
                     items.append(PreflightItem(PreflightSeverity.INFO, "SETTLE_TIME", f"evidence settle time: {settled_at.isoformat()}"))
                     start_boundary = (
                         timing.submission_window_start.isoformat()

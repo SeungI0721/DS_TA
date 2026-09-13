@@ -15,6 +15,7 @@ from github_lab_grader.manual_grade_adjustments import (
 )
 from github_lab_grader.models import GradingRules, ScoreRules, ScoringMode, WeeklyRubric
 from github_lab_grader.gradebook import build_all_section_gradebooks
+from github_lab_grader.config_loader import load_weekly_rubric
 from phase6_helpers import NOW, make_course, make_record, make_result, make_rubric, make_student
 
 
@@ -110,3 +111,28 @@ def test_adjustment_resolves_null_for_final_grade_and_weekly_projection() -> Non
     assert student["automatic_score"] is None
     assert student["manual_adjustment_score"] == 1.0
     assert student["effective_score"] == 1.0
+
+
+@pytest.mark.parametrize("score", [0.0, 0.25, 0.5, 0.75, 1.0])
+def test_week02_component_score_lattice_is_accepted(tmp_path: Path, score: float) -> None:
+    course = make_course(("01",), weeks=2)
+    students = [make_student("EXAMPLE001")]
+    rubric = load_weekly_rubric(
+        Path(__file__).resolve().parents[1] / "rubrics" / "week02.json"
+    )
+    path = tmp_path / "adjustments.csv"
+    write_csv(path, f"01,2,EXAMPLE001,{score},fictional approval\n")
+    assert load_manual_grade_adjustments(path, course, students, {2: rubric})[0].score == score
+
+
+@pytest.mark.parametrize("score", [0.1, 0.3, 0.8])
+def test_week02_rejects_scores_outside_component_lattice(tmp_path: Path, score: float) -> None:
+    course = make_course(("01",), weeks=2)
+    students = [make_student("EXAMPLE001")]
+    rubric = load_weekly_rubric(
+        Path(__file__).resolve().parents[1] / "rubrics" / "week02.json"
+    )
+    path = tmp_path / "adjustments.csv"
+    write_csv(path, f"01,2,EXAMPLE001,{score},fictional approval\n")
+    with pytest.raises(ManualGradeAdjustmentError, match="not allowed"):
+        load_manual_grade_adjustments(path, course, students, {2: rubric})

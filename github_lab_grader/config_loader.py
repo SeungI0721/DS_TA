@@ -12,7 +12,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .models import (
+    CCheckerId,
     CourseConfig,
+    DeadlineResolution,
+    GradingComponent,
     GradingRules,
     PathGroupMatch,
     RequiredPathGroup,
@@ -242,6 +245,9 @@ def load_weekly_rubric(path: Path) -> WeeklyRubric:
         raise ConfigurationError("grading and score_rules must be objects")
     sections: dict[str, SectionDeadline] = {}
     try:
+        deadline_resolution = DeadlineResolution(
+            data.get("deadline_resolution", "SECOND")
+        )
         raw_path_groups = grading_data.get("required_path_groups", ())
         if not isinstance(raw_path_groups, (list, tuple)) or any(
             not isinstance(group, dict)
@@ -277,21 +283,45 @@ def load_weekly_rubric(path: Path) -> WeeklyRubric:
             if not isinstance(section, str) or not section or not isinstance(timing, dict):
                 raise ConfigurationError("rubric section entry is invalid")
             late_value = timing.get("late_window_end")
+            scheduled = _timestamp(
+                timing.get("scheduled_deadline"), "scheduled_deadline"
+            )
+            effective = _timestamp(
+                timing.get("effective_deadline"), "effective_deadline"
+            )
+            if deadline_resolution is DeadlineResolution.MINUTE:
+                scheduled = scheduled.replace(second=59, microsecond=999999)
+                effective = effective.replace(second=59, microsecond=999999)
             sections[section] = SectionDeadline(
                 submission_window_start=_timestamp(
                     timing.get("submission_window_start"), "submission_window_start"
                 ),
-                scheduled_deadline=_timestamp(
-                    timing.get("scheduled_deadline"), "scheduled_deadline"
-                ),
-                effective_deadline=_timestamp(
-                    timing.get("effective_deadline"), "effective_deadline"
-                ),
+                scheduled_deadline=scheduled,
+                effective_deadline=effective,
                 late_window_end=(
                     _timestamp(late_value, "late_window_end") if late_value is not None else None
                 ),
                 deadline_note=str(timing.get("deadline_note", "")),
             )
+        raw_components = data.get("components_by_section", {})
+        if not isinstance(raw_components, dict):
+            raise ConfigurationError("components_by_section must be an object")
+        components_by_section = {
+            section: tuple(
+                GradingComponent(
+                    component_id=_required_text(component, "component_id"),
+                    project_path=_required_text(component, "project_path"),
+                    practice_number=int(component["practice_number"]),
+                    max_score=float(component["max_score"]),
+                    checker=CCheckerId(component["checker"]),
+                )
+                for component in components
+            )
+            for section, components in raw_components.items()
+            if isinstance(components, list)
+        }
+        if len(components_by_section) != len(raw_components):
+            raise ConfigurationError("component section entries must be arrays")
         rubric = WeeklyRubric(
             schema_version=int(data.get("schema_version", 1)),
             week=int(data["week"]),
@@ -317,6 +347,8 @@ def load_weekly_rubric(path: Path) -> WeeklyRubric:
                 }
             ),
             score_rules=ScoreRules(**{key: float(value) for key, value in scores_data.items()}),
+            deadline_resolution=deadline_resolution,
+            components_by_section=components_by_section,
         )
     except (KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, ConfigurationError):

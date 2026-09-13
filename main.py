@@ -21,11 +21,17 @@ from github_lab_grader.record_store import RecordStore, RecordStoreError
 from github_lab_grader.excel_report import ExcelReportWriter, ReportError
 from github_lab_grader.preflight import missing_operator_confirmations, run_preflight
 from github_lab_grader.dry_run_diagnostics import build_dry_run_diagnostics, format_dry_run_diagnostics
+from github_lab_grader.display_labels import format_display_label
 from github_lab_grader.manual_grade_adjustments import (
     ManualGradeAdjustmentError,
     apply_adjustments_to_weekly_records,
     apply_manual_grade_adjustments,
     load_manual_grade_adjustments,
+)
+from github_lab_grader.manual_review import (
+    ManualReviewError,
+    ManualReviewWorkbook,
+    import_manual_review_workbook,
 )
 
 
@@ -67,6 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("final-report", help="Create the all-sections workbook")
     subparsers.add_parser("validate-config", help="Validate configuration without grading")
     subparsers.add_parser("validate-adjustments", help="Validate private manual grade adjustments")
+    manual_report = subparsers.add_parser(
+        "manual-review-report", help="Create a private workbook for unresolved cases"
+    )
+    manual_report.add_argument("--week", type=int, required=True)
+    manual_import = subparsers.add_parser(
+        "import-manual-review", help="Import approved review workbook decisions"
+    )
+    manual_import.add_argument("--week", type=int, required=True)
+    manual_import.add_argument("--file", type=Path)
+    manual_import.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -77,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "preflight":
             report = run_preflight(args.week, args.section, default_auth_provider())
             for item in report.items:
-                print(f"{item.severity.value} {item.code}: {item.message}")
+                print(f"{format_display_label(item.severity)} {format_display_label(item.code, unknown_label='운영 점검 항목')}: {item.message}")
             print(f"PREFLIGHT_{'READY' if report.ready else 'BLOCKED'} section={args.section} week={args.week}")
             return 0 if report.ready else 1
         if args.command == "validate-config":
@@ -97,6 +113,52 @@ def main(argv: list[str] | None = None) -> int:
                 Path("data/manual_grade_adjustments.csv"), course, students, rubrics
             )
             print(f"MANUAL_ADJUSTMENTS_VALID count={len(adjustments)}")
+            return 0
+        if args.command in {"manual-review-report", "import-manual-review"}:
+            # 검토 workflow는 local canonical과 private 입력만 사용하며 GitHub에 연결하지 않는다.
+            course = load_global_config(Path("config.json"))
+            students = load_students(Path("data/students.csv"), configured_sections=course.sections)
+            rubric = load_weekly_rubric(Path("rubrics") / f"week{args.week:02d}.json")
+            store = RecordStore()
+            records = []
+            for section in course.sections:
+                try:
+                    records.append(store.load(section, args.week))
+                except RecordStoreError as exc:
+                    raise ManualReviewError(
+                        "CANONICAL_RECORD_REQUIRED",
+                        f"Section{section} Week {args.week:02d} canonical record가 필요합니다",
+                    ) from exc
+            reviewer = ManualReviewWorkbook()
+            if args.command == "manual-review-report":
+                path = reviewer.write(records, rubric)
+                print(f"수동 검토 workbook 생성 완료: {_display_path(path)}")
+                return 0
+            workbook_path = args.file or reviewer.path(args.week)
+            adjustment_path = Path("data/manual_grade_adjustments.csv")
+            store.private_file_preflight(workbook_path)
+            store.private_file_preflight(adjustment_path)
+            rubrics = {
+                item.week: item
+                for item in (
+                    load_weekly_rubric(path)
+                    for path in sorted(Path("rubrics").glob("week*.json"))
+                )
+            }
+            existing = load_manual_grade_adjustments(
+                adjustment_path, course, students, rubrics
+            )
+            result = import_manual_review_workbook(
+                workbook_path, week=args.week, course=course, students=students,
+                rubric=rubric, records=records, existing=existing,
+                adjustment_path=adjustment_path, dry_run=args.dry_run,
+            )
+            mode = "가져오기 미리보기" if args.dry_run else "수동 점수 조정 가져오기 완료"
+            print(mode)
+            print(f"신규 반영: {result.new}")
+            print(f"기존 동일: {result.unchanged}")
+            print("충돌: 0")
+            print(f"미입력 유지: {result.skipped}")
             return 0
         if args.command in {"week-report", "rebuild-gradebook", "final-report"}:
             # 보고 명령은 canonical/local 입력만 읽으며 인증 provider나 GitHub client를 만들지 않는다.
@@ -204,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
                     for line in format_dry_run_diagnostics(diagnostics, details=args.details):
                         print(line)
             return 0
-    except (ConfigurationError, ManualGradeAdjustmentError, RecordStoreError, ReportError, ValueError) as exc:
+    except (ConfigurationError, ManualGradeAdjustmentError, ManualReviewError, RecordStoreError, ReportError, ValueError) as exc:
         parser.error(str(exc))
     parser.error(f"{args.command!r} CLI record workflow is scheduled for a later phase")
     return 2
